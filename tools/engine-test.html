@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><title>Тест движка</title></head>
+<body style="background:#111;color:#ccc;font:14px monospace">
+<pre id="log"></pre>
+<script type="module">
+import { getSettings, saveProject } from '../js/store.js';
+import { newProject, applyIdea, addImages, buildEdit, getBlob } from '../js/pipeline.js';
+import { generateIdeas, generateStoryboard } from '../js/ideas.js';
+import { makeTestPlates } from '../js/testplates.js';
+import { runQC } from '../js/qc.js';
+import { exportVideo, detectCapabilities, verifyVideoFile } from '../js/engine/export.js';
+import { Renderer } from '../js/engine/renderer.js';
+import { stateAt } from '../js/engine/timeline.js';
+const log = (...a) => { document.getElementById('log').textContent += a.join(' ') + '\n'; console.log(...a); };
+window.runTest = async (opts = {}) => {
+  const settings = await getSettings();
+  const ideas = generateIdeas(10, [], 42);
+  log('ideas', ideas.length, ideas.slice(0,3).map(i => i.score + ' ' + i.title).join(' | '));
+  const p = newProject(settings);
+  applyIdea(p, ideas[0]);
+  const sb = generateStoryboard(ideas[0], settings, { seed: 7 });
+  p.storyboard = sb.storyboard; p.bible = sb.bible; p.script = sb.script;
+  log('shots', p.storyboard.shots.length, 'template', p.edit.templateId);
+  const files = await makeTestPlates(p.storyboard.shots.length);
+  const rep = await addImages(p, files);
+  log('assigned', rep.map(r => r.name + '->' + r.shot).join(', '));
+  const t0 = performance.now();
+  const { edl, synth, mix, analyses } = await buildEdit(p, settings);
+  log('edl', edl.duration.toFixed(2), 's frames', edl.frames, 'moves', edl.segments.map(s=>s.move).join(','), 'tr', edl.transitions.map(t=>t.type).join(','), 'glitches', edl.glitches.length, 'build ms', (performance.now()-t0).toFixed(0));
+  // кадры-образцы
+  const c = document.createElement('canvas'); c.width = 540; c.height = 960;
+  const r = new Renderer(c); await r.prepare(edl, getBlob);
+  window.frames = [];
+  for (const t of (opts.frameTimes || [0.5, 3, 5.2, 9, 14, 20, 26, 31, 35, edl.duration - 0.6])) {
+    r.renderAt(edl, Math.min(t, edl.duration - 0.05)); window.frames.push({ t, url: c.toDataURL('image/jpeg', 0.85) });
+  }
+  const qc = await runQC({ project: p, edl, analyses, synth, mix, settings, getBlob });
+  log('QC', qc.summary); log('motion', JSON.stringify(window.__qcMotion));
+  for (const it of qc.items) log(' ', it.status.toUpperCase(), it.title, '—', it.details);
+  if (opts.export !== false) {
+    const caps = await detectCapabilities();
+    log('caps', JSON.stringify(caps));
+    const t1 = performance.now();
+    const res = await exportVideo({ edl, getBlob, audio: mix, width: opts.w || 1080, height: opts.h || 1920, videoBitrate: 10e6, audioBitrate: 192000, caps, onProgress: p => { if (p.done % 150 === 0) log('  ', p.stage, p.done, '/', p.total); } });
+    log('export', res.method, res.videoCodec, res.audioCodec, (res.blob.size/1e6).toFixed(2), 'MB', ((performance.now()-t1)/1000).toFixed(1), 's');
+    const v = await verifyVideoFile(res.blob, edl);
+    for (const ch of v.checks) log('  verify', ch.ok ? 'OK' : (ch.warn ? 'WARN' : 'FAIL'), ch.text);
+    const buf = new Uint8Array(await res.blob.arrayBuffer());
+    let bin = ''; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    window.videoB64 = btoa(bin);
+  }
+  return 'done';
+};
+log('ready');
+</script></body></html>
