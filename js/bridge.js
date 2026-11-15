@@ -85,7 +85,7 @@ export function extractJSON(text) {
   }
 }
 
-export function parseIdeas(text) {
+export function parseIdeas(text, source = 'ChatGPT (через мост)') {
   const j = extractJSON(text);
   const arr = Array.isArray(j) ? j : j.ideas;
   if (!Array.isArray(arr) || !arr.length) throw new Error('В JSON нет массива ideas');
@@ -101,12 +101,12 @@ export function parseIdeas(text) {
     crit: null,
     parts: { custom: true, format: x.format || '', location: x.location || '', entity: x.entity || '', time: '' },
     year: Number(x.year) || 1995,
-    source: 'ChatGPT (через мост)',
+    source,
   })).sort((a, b) => b.score - a.score);
 }
 
 const BEATS = ['open', 'establish', 'build', 'detail', 'tension', 'reveal', 'climax', 'ending'];
-export function parseStoryboard(text, idea) {
+export function parseStoryboard(text, idea, source = 'ChatGPT (через мост)') {
   const j = extractJSON(text);
   if (!Array.isArray(j.shots) || j.shots.length < 3) throw new Error('В JSON нет массива shots (нужно минимум 3 кадра)');
   const b = j.bible || {};
@@ -132,5 +132,5 @@ export function parseStoryboard(text, idea) {
     if (p && String(p).length > 20) { sh.prompt = String(p) + '\nВертикальный кадр 9:16, без текста и надписей.'; sh.promptEdited = true; }
     else sh.prompt = buildPrompt(sh, bible);
   });
-  return { storyboard: { shots, approved: false, createdAt: Date.now(), plannedDuration: shots.reduce((a, s) => a + s.duration, 0), source: 'ChatGPT (через мост)' }, bible };
+  return { storyboard: { shots, approved: false, createdAt: Date.now(), plannedDuration: shots.reduce((a, s) => a + s.duration, 0), source }, bible };
 }

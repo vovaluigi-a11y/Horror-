@@ -434,7 +434,7 @@ export function stateAt(edl, t) {
 
   // --- вступление ---
   if (t < edl.introDur) {
-    S.fade = 0;
+    S.fade = 0; S.osd = null; // индикация появляется только после захвата сигнала
     for (const b of edl.intro.bursts) {
       if (t >= b.t && t < b.t + b.dur) {
         if (b.kind === 'noise') { S.noise = b.amt; S.fade = 0.0; }
@@ -457,7 +457,7 @@ export function stateAt(edl, t) {
   // --- финал ---
   if (t >= edl.showEnd) {
     const o = edl.outro;
-    S.fade = 0;
+    S.fade = 0; if (t > o.start + o.burst) S.osd = null;
     if (t < o.start + o.burst) { S.noise = 0.9 * (1 - (t - o.start) / o.burst) + 0.1; S.events.push('outro:burst'); }
     const sub = o.subliminal;
     if (t >= sub.t && t < sub.t + sub.dur) {

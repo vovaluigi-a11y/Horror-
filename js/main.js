@@ -11,6 +11,7 @@ import { exportVideo, detectCapabilities, describeCapabilities, verifyVideoFile 
 import { runQC, applyFix } from './qc.js';
 import { describeAnalysis } from './analyze.js';
 import { makeTestPlates } from './testplates.js';
+import { initPlatform, saveFile, canSaveExt, hasAI, askAI } from './platform.js';
 
 // ---------- состояние ----------
 const app = {
@@ -64,9 +65,9 @@ async function copyText(t) {
     modal(`<h3>Скопируйте текст вручную</h3><textarea style="min-height:300px">${esc(t)}</textarea><div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn" data-close>Закрыть</button></div>`, bg => { const ta = bg.querySelector('textarea'); ta.focus(); ta.select(); });
   }
 }
-function download(blob, name) {
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
-  document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+async function download(blob, name) {
+  try { const ok = await saveFile(blob, name); if (!ok) toast('Сохранение отменено'); }
+  catch (e) { toast('Не удалось сохранить: ' + e.message, 6000); }
 }
 const safeName = s => (s || 'horror').replace(/[^\p{L}\p{N}\-_ ]+/gu, '').trim().replace(/\s+/g, '_').slice(0, 60) || 'horror';
 
@@ -232,8 +233,9 @@ function viewIdeas() {
   const top = ideas.slice(0, 3), rest = ideas.slice(3);
   $('#main').innerHTML = `<div class="page">
     <div class="page-head"><div><h1>Генератор идей</h1><p>10 сюжетов с оценкой по оригинальности, атмосфере, визуальности и удержанию. Три лучших — сверху, рекомендованный выделен. Понравившиеся элементы система учитывает в следующих генерациях, использованные — не повторяет.</p></div>
-      <div class="row"><button class="btn primary" id="gen">Сгенерировать 10 идей</button><button class="btn" id="bridge">Идеи через ChatGPT…</button></div></div>
-    <div class="notice small">Встроенный генератор работает без интернета и платных API: он комбинирует авторскую библиотеку из ${'14 форматов записи, 22 мест, 25 аномалий, 12 существ и 13 финалов'} и оценивает сочетания по правилам. Это не нейросеть. Если хотите идеи уровня языковой модели — кнопка «Идеи через ChatGPT»: скопируйте готовый запрос в ChatGPT и вставьте ответ обратно, приложение разберёт его само.</div>
+      <div class="row">${hasAI() ? '<button class="btn primary" id="genAI">✦ 10 идей от ИИ</button>' : ''}<button class="btn ${hasAI() ? '' : 'primary'}" id="gen">Сгенерировать 10 идей${hasAI() ? ' (встроенный)' : ''}</button><button class="btn" id="bridge">Идеи через ChatGPT…</button></div></div>
+    <div id="aiBox"></div>
+    <div class="notice small">Встроенный генератор работает без интернета и платных API: он комбинирует авторскую библиотеку из ${'14 форматов записи, 22 мест, 25 аномалий, 12 существ и 13 финалов'} и оценивает сочетания по правилам. Это не нейросеть. Если хотите идеи уровня языковой модели — ${hasAI() ? 'кнопка «10 идей от ИИ» (языковая модель доступна прямо в этой среде, без ключей и доплат) или ' : ''}кнопка «Идеи через ChatGPT»: скопируйте готовый запрос в ChatGPT и вставьте ответ обратно, приложение разберёт его само.</div>
     ${ideas.length ? `<h4 style="margin-top:20px">Лучшие три</h4><div class="grid g3">${top.map((i, k) => ideaCard(i, k, true)).join('')}</div>
       ${rest.length ? `<h4 style="margin-top:24px">Остальные идеи</h4><div class="grid g3">${rest.map(i => ideaCard(i, -1, false)).join('')}</div>` : ''}` : '<div class="card empty">Нажмите «Сгенерировать 10 идей».</div>'}
     <details style="margin-top:24px"><summary>История идей (${app.history.length}) — не будут повторены</summary>
@@ -241,6 +243,7 @@ function viewIdeas() {
     </details></div>`;
   $('#gen').onclick = doGenerateIdeas;
   $('#bridge').onclick = bridgeIdeas;
+  if ($('#genAI')) $('#genAI').onclick = () => aiIdeas();
   const find = id => ideas.find(i => i.id === id);
   document.querySelectorAll('[data-pick]').forEach(b => b.onclick = () => pickIdea(find(b.dataset.pick)));
   document.querySelectorAll('[data-like]').forEach(b => b.onclick = async () => {
@@ -258,6 +261,17 @@ function viewIdeas() {
   });
   document.querySelectorAll('[data-hpick]').forEach(b => b.onclick = () => { const h = app.history.find(x => x.id === b.dataset.hpick); if (h) pickIdea(h.idea); });
   document.querySelectorAll('[data-hdel]').forEach(b => b.onclick = async () => { await store.deleteIdeaRecord(b.dataset.hdel); app.history = await store.listIdeaHistory(); render(); });
+}
+async function aiIdeas() {
+  const box = $('#aiBox'); const btn = $('#genAI');
+  if (btn) btn.disabled = true;
+  if (box) box.innerHTML = '<div class="notice small">ИИ придумывает и оценивает 10 идей… <span id="aiLen"></span></div>';
+  try {
+    const text = await askAI(ideasRequest(app.history, app.settings.styles.join(', ')), { onText: u => { const l = $('#aiLen'); if (l) l.textContent = `(${u.text.length} симв.)`; } });
+    const ideas = parseIdeas(text, 'ИИ (языковая модель среды)');
+    await setIdeas(ideas); toast(`ИИ предложил идей: ${ideas.length}`);
+    return ideas;
+  } catch (e) { if ($('#aiBox')) $('#aiBox').innerHTML = `<div class="notice bad small">${esc(e.message)}</div>`; if (btn) btn.disabled = false; return null; }
 }
 function bridgeIdeas() {
   const req = ideasRequest(app.history, app.settings.styles.join(', '));
@@ -306,7 +320,7 @@ function viewScript() {
   $('#main').innerHTML = `<div class="page">
     <div class="page-head"><div><h1>Сценарная</h1><p>«${esc(p.idea?.title)}» · ${sb.shots.length} кадров · ≈${(total + 4).toFixed(0)} с с вступлением и финалом${sb.source ? ' · ' + esc(sb.source) : ''}</p></div>
       <div class="row">${locked ? `<span class="tag ok">Раскадровка утверждена</span><button class="btn" id="unlock">Изменить (новая версия)</button>` : `<button class="btn primary" id="approve">Утвердить раскадровку</button>`}
-      <button class="btn" id="regen">Пересоздать</button><button class="btn" id="bridgeSb">Раскадровка через ChatGPT…</button></div></div>
+      <button class="btn" id="regen">Пересоздать</button>${hasAI() ? '<button class="btn" id="aiSb">✦ Раскадровка от ИИ</button>' : ''}<button class="btn" id="bridgeSb">Раскадровка через ChatGPT…</button></div></div>
     ${locked ? '<div class="notice ok small">Утверждённая версия защищена от изменений. Автоисправления контроля качества меняют только настройки монтажа, а не сценарий.</div>' : '<div class="notice small">Отредактируйте любые поля. Движение камеры и переход в режиме «Авто» подбираются монтажным движком по анализу изображения и драматургии кадра.</div>'}
     <div class="grid g2">
       <div class="card"><h3>Сценарий</h3><pre class="prompt" style="max-height:340px">${esc(p.script || '')}</pre></div>
@@ -366,6 +380,20 @@ function viewScript() {
     const r = generateStoryboard(p.idea, app.settings, { seed: Date.now(), count: old.length });
     r.storyboard.shots.forEach((s, i) => { if (old[i]) { s.images = old[i].images; s.activeImage = old[i].activeImage; } });
     p.storyboard = r.storyboard; p.bible = r.bible; p.script = r.script; invalidateBuild(); await save(); render();
+  };
+  if ($('#aiSb')) $('#aiSb').onclick = async () => {
+    if (locked && !await confirmBox('Раскадровка утверждена. Заменить её раскадровкой от ИИ? Текущая версия сохранится в истории.', 'Заменить')) return;
+    const b = $('#aiSb'); b.disabled = true; b.textContent = 'ИИ пишет раскадровку…';
+    try {
+      const text = await askAI(storyboardRequest(p.idea, app.settings));
+      const r = parseStoryboard(text, p.idea, 'ИИ (языковая модель среды)');
+      store.snapshot(p, 'Перед раскадровкой от ИИ');
+      const old = p.storyboard.shots;
+      r.storyboard.shots.forEach((s, i) => { if (old[i]) { s.images = old[i].images; s.activeImage = old[i].activeImage; } });
+      p.storyboard = r.storyboard; p.bible = { ...p.bible, ...r.bible };
+      p.script = r.storyboard.shots.map(s => `[${BEAT_NAMES[s.beat]}] ${s.content}`).join('\n');
+      invalidateBuild(); await save(); render(); toast('Раскадровка от ИИ загружена');
+    } catch (e) { toast(e.message, 6000); b.disabled = false; b.textContent = '✦ Раскадровка от ИИ'; }
   };
   $('#bridgeSb').onclick = () => {
     const req = storyboardRequest(p.idea, app.settings);
@@ -597,7 +625,7 @@ async function viewMontage() {
             ${TRACKS.map(t => `<div class="track"><input type="checkbox" data-ton="${t.id}" ${p.edit.tracks[t.id]?.on !== false ? 'checked' : ''}><span>${t.name}</span><input type="range" min="0" max="1" step="0.01" data-tvol="${t.id}" value="${p.edit.tracks[t.id]?.vol ?? 0.6}"><output class="small mono">${Math.round((p.edit.tracks[t.id]?.vol ?? 0.6) * 100)}</output></div>`).join('')}
             <div class="track"><span></span><b>Общая громкость</b><input type="range" min="0.3" max="1" step="0.01" id="master" value="${p.edit.masterVol ?? 0.9}"><output class="small mono">${Math.round((p.edit.masterVol ?? 0.9) * 100)}</output></div>
             <p class="small muted" style="margin-top:10px">Каждому визуальному сбою соответствует звуковой: зелёная полоса — сетевой гул, сдвиг RGB — цифровой писк, разрыв строк — хруст ленты, провал — обрыв звука со щелчком, блоки — цифровой скрежет. Перед раскрытием — полная тишина и удар. Сведение: мягкий лимитер, пик −1 дБFS.</p>
-            <button class="btn sm" id="wav">Скачать звук отдельно (WAV)</button></div>` : ''}
+            ${canSaveExt('wav') ? '<button class="btn sm" id="wav">Скачать звук отдельно (WAV)</button>' : ''}</div>` : ''}
         ${tab === 'shots' ? `<div class="card"><h4>Настройки кадров для монтажа</h4><p class="small muted">Эти назначения хранятся в монтаже и не меняют утверждённый сценарий. «Авто» — движок выбирает сам.</p>
             ${p.storyboard.shots.filter(s => (s.images || []).length && s.enabled !== false).map(s => { const o = p.edit.overrides?.[s.id] || {}; return `<div class="grid g3" style="padding:8px 0;border-bottom:1px solid var(--line);align-items:end">
               <div><span class="shot-n">КАДР ${s.n}</span> <span class="small muted">${esc(BEAT_NAMES[s.beat])}</span><div class="small">${esc(s.content).slice(0, 90)}</div></div>
@@ -776,7 +804,7 @@ async function viewArchive() {
     <div class="page-head"><div><h1>Архив</h1><p>Готовые ролики, версии проектов и резервные копии.</p></div>
       <div class="row"><label class="btn">Импорт проекта<input type="file" accept=".hsproj,.json" id="imp" hidden></label></div></div>
     ${p ? `<div class="card"><h3>Текущий проект: ${esc(p.title)}</h3>
-      <div class="row"><button class="btn" id="backup">Скачать проект (резервная копия .hsproj)</button><span class="small muted">Включает идею, сценарий, промпты, изображения и настройки монтажа. Видео не входит — его скачивайте отдельно.</span></div>
+      <div class="row"><button class="btn" id="backup">Скачать проект (резервная копия .json)</button><span class="small muted">Включает идею, сценарий, промпты, изображения и настройки монтажа. Видео не входит — его скачивайте отдельно.</span></div>
       <details style="margin-top:12px"><summary>История версий (${(p.versions || []).length})</summary>${(p.versions || []).map(v => `<div class="row" style="justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)"><span class="small">${fmtDate(v.at)} — ${esc(v.label)}</span><button class="btn sm" data-restore="${v.id}">Восстановить</button></div>`).join('') || '<p class="muted small">Пусто</p>'}</details></div>` : ''}
     <h4 style="margin-top:20px">Готовые ролики</h4>
     ${withR.length ? `<div class="grid g3">${withR.map(pr => pr.renders.map((r, k) => `<div class="card"><b>${esc(pr.title)}</b>${k ? ` <span class="tag">версия ${pr.renders.length - k}</span>` : ' <span class="tag red">последняя</span>'}
@@ -787,7 +815,7 @@ async function viewArchive() {
   </div>`;
   bindProjRows();
   $('#imp').onchange = async e => { const f = e.target.files[0]; if (!f) return; try { const np = await store.importProjectFile(f); toast('Проект импортирован'); openProject(np.id); } catch (err) { toast('Ошибка импорта: ' + err.message); } };
-  if ($('#backup')) $('#backup').onclick = async () => download(await store.exportProjectFile(p), safeName(p.title) + '.hsproj');
+  if ($('#backup')) $('#backup').onclick = async () => download(await store.exportProjectFile(p), safeName(p.title) + '.horror.json');
   document.querySelectorAll('[data-restore]').forEach(b => b.onclick = async () => {
     const v = p.versions.find(x => x.id === b.dataset.restore);
     if (!await confirmBox(`Восстановить версию «${esc(v.label)}» от ${fmtDate(v.at)}? Текущее состояние тоже сохранится в истории.`, 'Восстановить')) return;
@@ -895,6 +923,7 @@ async function boot() {
     return;
   }
   render();
+  initPlatform().then(c => { if (c.sample || c.downloads) render(); });
   setInterval(() => { if (app.project) localStorageSet('hs_last', app.project.id); }, 2000);
 }
 function localStorageGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }

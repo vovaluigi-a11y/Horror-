@@ -15,7 +15,7 @@ a { color: var(--red2); }
 h1, h2, h3, h4 { margin: 0 0 .5em; font-weight: 650; letter-spacing: .01em; }
 h1 { font-size: 24px; } h2 { font-size: 19px; } h3 { font-size: 15px; } h4 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
 p { margin: .3em 0 .8em; }
-.app { display: grid; grid-template-columns: 236px 1fr; height: 100vh; }
+.app { display: grid; grid-template-columns: 236px 1fr; height: 100%; }
 .side { background: #0e0e10; border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
 .logo { padding: 20px 18px 14px; border-bottom: 1px solid var(--line); }
 .logo b { display: block; font: 800 19px/1 var(--sans); letter-spacing: .22em; }
