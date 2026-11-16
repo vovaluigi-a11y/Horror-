@@ -1,7 +1,7 @@
 // Конвейер проекта: создание, распределение изображений, анализ, сборка монтажа и звука.
 
 import { uid, saveImage, getImage, saveProject, snapshot } from './store.js';
-import { analyzeImage } from './analyze.js';
+import { analyzeImage, loadBitmap } from './analyze.js';
 import { buildEDL } from './engine/timeline.js';
 import { synthesizeTracks, mixTracks } from './engine/audio.js';
 import { BUILTIN_TEMPLATES, templateById, editFromTemplate } from './templates.js';
@@ -52,20 +52,38 @@ export async function getAnalysis(imageId) {
 }
 
 // Добавить файлы: распределение по кадрам (по номеру в имени, иначе — по порядку в свободные кадры)
+// Проверка, что браузер действительно может прочитать файл как изображение
+async function canDecode(file) {
+  try { const b = await loadBitmap(file); const ok = b.width > 0 && b.height > 0; b.close?.(); return ok; }
+  catch (e) { return false; }
+}
+function rejectReason(f) {
+  if (/\.(heic|heif)$/i.test(f.name) || /hei[cf]/i.test(f.type)) return 'формат HEIC/HEIF (фото iPhone) этот браузер не читает — сохраните картинку как JPG или PNG';
+  if (f.type && !/^image\//.test(f.type)) return `это не изображение (${f.type})`;
+  if (!f.size) return 'пустой файл';
+  return 'браузер не смог прочитать файл как изображение — сохраните его как JPG или PNG';
+}
+
+// Добавить файлы: распределение по кадрам (по номеру в имени, иначе — по порядку в свободные кадры).
+// Каждый файл проверяется отдельно: ошибка одного файла не останавливает остальные.
 export async function addImages(project, files, { targetShotId = null, onProgress } = {}) {
   const shots = project.storyboard?.shots || [];
-  const report = [];
-  const list = [...files].filter(f => /^image\//.test(f.type) || /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(f.name));
+  const report = [], rejected = [];
+  const list = [...files];
   list.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   let k = 0;
   for (const f of list) {
     onProgress?.(k++, list.length, f.name);
-    const imageId = await saveImage(f, { name: f.name });
-    const analysis = await getAnalysis(imageId);
-    const entry = { imageId, name: f.name, addedAt: Date.now() };
+    if (!(await canDecode(f))) { rejected.push({ name: f.name, reason: rejectReason(f) }); continue; }
+    let imageId, analysis = null;
+    try {
+      imageId = await saveImage(f, { name: f.name || 'image' });
+    } catch (e) { rejected.push({ name: f.name, reason: 'не удалось сохранить в хранилище браузера (' + (e.message || e) + ')' }); continue; }
+    try { analysis = await getAnalysis(imageId); } catch (e) { console.warn('analysis failed', e); }
+    const entry = { imageId, name: f.name || 'image', addedAt: Date.now() };
     let target = null;
     if (targetShotId) target = shots.find(s => s.id === targetShotId);
-    if (!target) { const n = numberFromName(f.name); if (n) target = shots.find(s => s.n === n); }
+    if (!target) { const n = numberFromName(f.name || ''); if (n) target = shots.find(s => s.n === n) || null; }
     if (!target) target = shots.find(s => !(s.images || []).length);
     if (target) {
       target.images = target.images || [];
@@ -78,6 +96,7 @@ export async function addImages(project, files, { targetShotId = null, onProgres
       report.push({ name: f.name, shot: null, issues: analysis?.issues || [] });
     }
   }
+  report.rejected = rejected;
   return report;
 }
 

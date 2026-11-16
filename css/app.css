@@ -147,3 +147,7 @@ video { width: 100%; border-radius: 8px; background: #000; }
   .shot { grid-template-columns: 90px 1fr; } .shot .pic { width: 90px; height: 160px; }
   .kv { grid-template-columns: 1fr; }
 }
+
+/* поле выбора файла: не display:none — иначе в части браузеров и встроенных окон оно не открывается */
+.file-in { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; clip: rect(0 0 0 0); pointer-events: none; }
+label.btn { position: relative; }

@@ -169,7 +169,7 @@ async function viewHome() {
       <div class="card"><h3>Хранилище</h3>
         <p class="muted small">Проекты, изображения и видео хранятся в этом браузере (IndexedDB). ${est ? `Занято ${(est.usage / 1e6).toFixed(0)} МБ из доступных ~${(est.quota / 1e9).toFixed(1)} ГБ.` : ''}</p>
         <p class="small">${app.persisted ? '<span class="status-ok">✓ Браузер подтвердил постоянное хранение — данные не будут удалены автоматически.</span>' : '<span class="status-warn">! Браузер может очистить данные при нехватке места.</span> Делайте резервные копии проектов (Архив → «Скачать проект»).'}</p>
-        <div class="row"><button class="btn sm" id="persist">Запросить постоянное хранение</button><label class="btn sm">Импорт проекта<input type="file" accept=".hsproj,.json" id="imp" hidden></label></div>
+        <div class="row"><button class="btn sm" id="persist">Запросить постоянное хранение</button><label class="btn sm">Импорт проекта<input type="file" accept=".hsproj,.json,application/json" id="imp" class="file-in"></label></div>
       </div>
     </div>
   </div>`;
@@ -434,8 +434,11 @@ async function viewGallery() {
       <div class="row"><button class="btn" id="allP">Все промпты одним сообщением</button><button class="btn" id="test" title="Процедурные рисунки только для проверки движка">Тестовые кадры</button>
       <button class="btn primary" data-go="montage" ${withImg ? '' : 'disabled'}>Дальше: монтаж →</button></div></div>
     <div class="notice small"><b>Как получить изображения без API и доплат.</b> Опубликованное веб-приложение не может само вызвать генератор изображений ChatGPT — для этого нужен платный API, поэтому кнопки «сгенерировать» здесь нет. Порядок такой: нажмите «Копировать запрос» у кадра (или «Все промпты одним сообщением») → вставьте в ChatGPT → скачайте картинки → перетащите их сюда. Файлы распределятся по кадрам сами: по номеру в имени (shot_03.png, кадр 3.jpg) или по порядку в свободные кадры. Каждая картинка сразу анализируется: экспозиция, контраст, точки интереса, рамки, разрешение.</div>
-    <div class="drop" id="drop">Перетащите изображения сюда или <label style="color:var(--red2);cursor:pointer;text-decoration:underline">выберите файлы<input type="file" id="files" accept="image/*" multiple hidden></label> · можно сразу все кадры</div>
-    <div id="upProg"></div>
+    <div class="drop" id="drop">
+      <button class="btn primary" id="pickFiles" type="button">Загрузить изображения</button>
+      <input type="file" id="files" accept="image/*" multiple class="file-in" tabindex="-1" aria-hidden="true">
+      <div class="small muted" style="margin-top:8px">Можно выбрать сразу все кадры. Также можно перетащить файлы сюда или вставить картинку из буфера (Ctrl+V / «Вставить»).</div></div>
+    <div id="upProg">${app.uploadNote || ''}</div>
     ${(p.unassigned || []).length ? `<div class="card" style="margin-top:14px"><h3>Нераспределённые изображения</h3><div class="row">${p.unassigned.map(im => `<div style="text-align:center"><div class="thumb"><img src="${urls[im.imageId]}"></div><select class="small" data-assign="${im.imageId}" style="width:90px;margin-top:4px"><option value="">в кадр…</option>${shots.map(s => `<option value="${s.id}">Кадр ${s.n}</option>`).join('')}</select></div>`).join('')}</div></div>` : ''}
     <div style="margin-top:16px">${shots.map(s => {
       const act = s.images?.[s.activeImage || 0];
@@ -444,7 +447,7 @@ async function viewGallery() {
         <div><div class="pic">${act ? `<img src="${urls[act.imageId]}">` : 'нет<br>изображения'}</div></div>
         <div style="min-width:0">
           <div class="row" style="justify-content:space-between"><div class="row"><span class="shot-n">КАДР ${s.n}</span><span class="tag">${BEAT_NAMES[s.beat] || ''}</span>${s.enabled === false ? '<span class="tag warn">исключён</span>' : ''}</div>
-            <div class="row"><button class="btn sm" data-copy="${s.id}">Копировать запрос</button><label class="btn sm">Загрузить<input type="file" accept="image/*" multiple hidden data-up="${s.id}"></label></div></div>
+            <div class="row"><button class="btn sm" data-copy="${s.id}">Копировать запрос</button><button class="btn sm" type="button" data-pickup="${s.id}">Загрузить в этот кадр</button><input type="file" accept="image/*" multiple class="file-in" tabindex="-1" aria-hidden="true" data-up="${s.id}"></div></div>
           <p class="small" style="margin:6px 0">${esc(s.content)}</p>
           <details><summary class="small">Промпт${s.promptEdited ? ' (изменён вручную)' : ''}</summary><textarea data-prompt="${s.id}" style="min-height:150px;font:12px var(--mono);margin-top:6px">${esc(s.prompt)}</textarea>
             <div class="row"><button class="btn sm ghost" data-reprompt="${s.id}">Вернуть автоматический промпт</button></div></details>
@@ -455,17 +458,40 @@ async function viewGallery() {
   bindGo();
   const handleFiles = async (files, target = null) => {
     const prog = $('#upProg');
-    const rep = await addImages(p, files, { targetShotId: target, onProgress: (i, n, name) => { prog.innerHTML = `<div class="small muted">Анализ ${i + 1}/${n}: ${esc(name)}</div><div class="progress"><i style="width:${(i + 1) / n * 100}%"></i></div>`; } });
-    invalidateBuild(); await save();
-    toast(rep.map(r => r.shot ? `${r.name} → кадр ${r.shot}` : `${r.name} → не распределено`).slice(0, 4).join('; ') + (rep.length > 4 ? '…' : ''), 5000);
+    const list = [...(files || [])];
+    if (!list.length) { toast('Файлы не выбраны'); return; }
+    if (prog) prog.innerHTML = `<div class="notice small">Получено файлов: ${list.length}. Проверяю и анализирую…</div>`;
+    let rep;
+    try {
+      rep = await addImages(p, list, { targetShotId: target, onProgress: (i, n, name) => { if (prog) prog.innerHTML = `<div class="small muted">Анализ ${i + 1}/${n}: ${esc(name)}</div><div class="progress"><i style="width:${(i + 1) / n * 100}%"></i></div>`; } });
+      invalidateBuild(); await save();
+    } catch (e) {
+      console.error(e);
+      if (prog) prog.innerHTML = `<div class="notice bad">Не удалось загрузить изображения: ${esc(e.message || e)}</div>`;
+      return;
+    }
+    const rej = rep.rejected || [];
+    app.uploadNote = (rep.length ? `<div class="notice ok small">Загружено: ${rep.length}. ${rep.map(r => `${esc(r.name)} → ${r.shot ? 'кадр ' + r.shot : 'не распределено (все кадры заняты — выберите кадр ниже)'}`).join('; ')}</div>` : '')
+      + (rej.length ? `<div class="notice bad small">Не загружено: ${rej.length}.<br>${rej.map(r => `${esc(r.name)}: ${esc(r.reason)}`).join('<br>')}</div>` : '');
     render();
     if (app.autopilot && p.storyboard.shots.every(s => (s.images || []).length)) autopilot();
+  };
+  const pick = inp => { inp.value = ''; inp.click(); };
+  $('#pickFiles').onclick = () => pick($('#files'));
+  document.querySelectorAll('[data-pickup]').forEach(b => b.onclick = () => pick(document.querySelector(`[data-up="${b.dataset.pickup}"]`)));
+  // вставка картинки из буфера обмена
+  document.onpaste = e => {
+    if (app.view !== 'gallery') return;
+    const fs = [...(e.clipboardData?.items || [])].filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean)
+      .map((f, i) => new File([f], f.name && f.name !== 'image.png' ? f.name : `вставка_${Date.now()}_${i + 1}.png`, { type: f.type }));
+    if (fs.length) { e.preventDefault(); handleFiles(fs); }
   };
   const drop = $('#drop');
   ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
   ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
   drop.addEventListener('drop', e => handleFiles(e.dataTransfer.files));
   $('#files').onchange = e => handleFiles(e.target.files);
+  app.uploadNote = '';
   document.querySelectorAll('[data-up]').forEach(inp => inp.onchange = e => handleFiles(e.target.files, inp.dataset.up));
   document.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => { const s = shots.find(x => x.id === b.dataset.copy); copyText(imageRequest(s, p.bible)); });
   $('#allP').onclick = () => copyText(allImagesRequest(p));
@@ -802,7 +828,7 @@ async function viewArchive() {
   const p = app.project;
   $('#main').innerHTML = `<div class="page">
     <div class="page-head"><div><h1>Архив</h1><p>Готовые ролики, версии проектов и резервные копии.</p></div>
-      <div class="row"><label class="btn">Импорт проекта<input type="file" accept=".hsproj,.json" id="imp" hidden></label></div></div>
+      <div class="row"><label class="btn">Импорт проекта<input type="file" accept=".hsproj,.json,application/json" id="imp" class="file-in"></label></div></div>
     ${p ? `<div class="card"><h3>Текущий проект: ${esc(p.title)}</h3>
       <div class="row"><button class="btn" id="backup">Скачать проект (резервная копия .json)</button><span class="small muted">Включает идею, сценарий, промпты, изображения и настройки монтажа. Видео не входит — его скачивайте отдельно.</span></div>
       <details style="margin-top:12px"><summary>История версий (${(p.versions || []).length})</summary>${(p.versions || []).map(v => `<div class="row" style="justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)"><span class="small">${fmtDate(v.at)} — ${esc(v.label)}</span><button class="btn sm" data-restore="${v.id}">Восстановить</button></div>`).join('') || '<p class="muted small">Пусто</p>'}</details></div>` : ''}
