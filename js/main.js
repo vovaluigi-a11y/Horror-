@@ -11,7 +11,7 @@ import { exportVideo, detectCapabilities, describeCapabilities, verifyVideoFile 
 import { runQC, applyFix } from './qc.js';
 import { describeAnalysis } from './analyze.js';
 import { makeTestPlates } from './testplates.js';
-import { initPlatform, saveFile, canSaveExt, hasAI, askAI } from './platform.js';
+import { initPlatform, saveFile, canSaveExt, hasAI, askAI, hasInbox, listInbox, fetchInbox } from './platform.js';
 
 // ---------- состояние ----------
 const app = {
@@ -443,6 +443,7 @@ async function viewGallery() {
       <div class="small muted" style="margin-top:8px">Можно выбрать сразу все кадры или перетащить файлы сюда.</div>
       <div id="pasteBox" class="paste-box" contenteditable="true" inputmode="none" aria-label="Поле для вставки картинки">Или скопируйте картинку (в ChatGPT: долгое нажатие на картинку → «Копировать») и здесь: долгое нажатие → «Вставить». На компьютере — Ctrl+V.</div>
       <div id="pickHelp"></div></div>
+    <div id="inbox"></div>
     <div id="upProg">${app.uploadNote || ''}</div>
     <details class="notice small"><summary><b>Как получить изображения без API и доплат</b></summary> Опубликованное веб-приложение не может само вызвать генератор изображений ChatGPT — для этого нужен платный API, поэтому кнопки «сгенерировать» здесь нет. Порядок такой: нажмите «Копировать запрос» у кадра (или «Все промпты одним сообщением») → вставьте в ChatGPT → скачайте картинки → перетащите их сюда. Файлы распределятся по кадрам сами: по номеру в имени (shot_03.png, кадр 3.jpg) или по порядку в свободные кадры. Каждая картинка сразу анализируется: экспозиция, контраст, точки интереса, рамки, разрешение.</details>
     ${(p.unassigned || []).length ? `<div class="card" style="margin-top:14px"><h3>Нераспределённые изображения</h3><div class="row">${p.unassigned.map(im => `<div style="text-align:center"><div class="thumb"><img src="${urls[im.imageId]}"></div><select class="small" data-assign="${im.imageId}" style="width:90px;margin-top:4px"><option value="">в кадр…</option>${shots.map(s => `<option value="${s.id}">Кадр ${s.n}</option>`).join('')}</select></div>`).join('')}</div></div>` : ''}
@@ -499,6 +500,27 @@ async function viewGallery() {
     }, 2000);
   };
   $('#pickFiles').onclick = () => pick($('#files'));
+  // изображения, которые Claude положил в хранилище страницы из чата
+  (async () => {
+    if (!hasInbox()) return;
+    const all = await listInbox();
+    const done = new Set(p.importedAssets || []);
+    const fresh = all.filter(a => !done.has(a.id));
+    const box = $('#inbox'); if (!box) return;
+    box.innerHTML = `<div class="card" style="margin-top:12px"><h3>Изображения из чата с Claude</h3>
+      <p class="small muted">Если на телефоне не работает выбор файлов: пришлите картинки в чат Claude (по порядку кадров) и попросите положить их в студию. Они появятся здесь.</p>
+      ${fresh.length ? `<button class="btn primary" id="takeInbox">Забрать в кадры: ${fresh.length} шт.</button>` : `<div class="small muted">Новых изображений нет${all.length ? ` (уже забрано: ${all.length})` : ''}.</div>`}
+      <button class="btn sm ghost" id="refreshInbox">Проверить снова</button></div>`;
+    $('#refreshInbox').onclick = () => render();
+    if ($('#takeInbox')) $('#takeInbox').onclick = async () => {
+      $('#takeInbox').disabled = true;
+      const files = [], bad = [];
+      for (let i = 0; i < fresh.length; i++) { try { files.push(await fetchInbox(fresh[i], (p.importedAssets || []).length + i)); } catch (e) { bad.push(e.message); } }
+      p.importedAssets = [...(p.importedAssets || []), ...fresh.map(a => a.id)];
+      if (bad.length) toast('Не получено: ' + bad.length + ' — ' + bad[0], 6000);
+      await handleFiles(files);
+    };
+  })();
   document.querySelectorAll('[data-pickup]').forEach(b => b.onclick = () => pick(document.querySelector(`[data-up="${b.dataset.pickup}"]`)));
   // вставка картинки из буфера обмена (Ctrl+V или «Вставить» в поле на телефоне)
   const pasteFiles = list => list.map((f, i) => new File([f], f.name && f.name !== 'image.png' ? f.name : `вставка_${Date.now()}_${i + 1}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type || 'image/png' }));
