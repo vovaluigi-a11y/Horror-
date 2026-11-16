@@ -1,7 +1,7 @@
 // HORROR STUDIO — интерфейс.
 import * as store from './store.js';
 import { newProject, applyIdea, addImages, buildEdit, getBlob, collectAnalyses, getAnalysis } from './pipeline.js';
-import { generateIdeas, reworkIdea, generateStoryboard, recomputePrompts, buildPrompt, BEAT_NAMES } from './ideas.js';
+import { generateIdeas, reworkIdea, generateStoryboard, recomputePrompts, buildPrompt, BEAT_NAMES, storyboardFromImages } from './ideas.js';
 import { ideasRequest, storyboardRequest, imageRequest, allImagesRequest, parseIdeas, parseStoryboard } from './bridge.js';
 import { BUILTIN_TEMPLATES, PARAM_DEFS, TRACKS, templateById, editFromTemplate } from './templates.js';
 import { MOVES, TRANSITIONS, GLITCHES, buildEDL } from './engine/timeline.js';
@@ -144,6 +144,56 @@ async function startNewProject() {
   doGenerateIdeas();
 }
 
+// ---------- выбор файлов (общий) ----------
+// Открыть окно выбора файлов; если оно не появилось за 2 с — показать, как обойти.
+function openPicker(inp, helpEl) {
+  inp.value = '';
+  let opened = false;
+  const mark = () => { opened = true; };
+  window.addEventListener('blur', mark, { once: true });
+  document.addEventListener('visibilitychange', mark, { once: true });
+  inp.addEventListener('change', mark, { once: true });
+  inp.addEventListener('cancel', mark, { once: true });
+  inp.click();
+  setTimeout(() => {
+    if (opened || document.hidden || !helpEl || !helpEl.isConnected) return;
+    helpEl.innerHTML = `<div class="notice warn small" style="text-align:left"><b>Окно выбора файлов не открылось.</b> Похоже, студия открыта во встроенном окне приложения, которое не разрешает выбирать файлы. Откройте студию в браузере Chrome — или пришлите картинки в чат Claude и попросите положить их в студию (затем Галерея → «Забрать в кадры»).</div>`;
+  }, 2000);
+}
+
+// Проект сразу из своих картинок: без идеи и раскадровки — сразу в монтаж
+async function quickProjectFromFiles(files) {
+  const list = [...(files || [])];
+  if (!list.length) return toast('Файлы не выбраны');
+  const p = newProject(app.settings, 'Мой ролик ' + new Date().toLocaleDateString('ru-RU'));
+  p.idea = { id: store.uid('i'), title: p.title, logline: 'Ролик собран из ваших изображений.', visual: '', detail: '', ending: '', score: 0, reason: '', parts: {}, source: 'Свои изображения' };
+  p.ideaApproved = true;
+  p.storyboard = storyboardFromImages(Math.min(12, list.length), app.settings);
+  p.bible = { location: '', character: '', keyObject: '', era: '1996', camera: 'бытовая VHS-камера', palette: '', rules: '', osdDate: { y: 1996, m: 10, d: 14, h: 2, min: 13, s: 7 } };
+  p.script = 'Ролик из ваших изображений (' + list.length + ' шт.).';
+  toast(`Получено файлов: ${list.length}. Анализирую…`);
+  const rep = await addImages(p, list.slice(0, 12));
+  const rej = rep.rejected || [];
+  p.storyboard.shots = p.storyboard.shots.filter(s => (s.images || []).length);
+  p.storyboard.shots.forEach((s, i) => s.n = i + 1);
+  if (!p.storyboard.shots.length) {
+    toast('Ни одно изображение не удалось прочитать. ' + (rej[0] ? rej[0].reason : ''), 9000);
+    return;
+  }
+  app.project = p; invalidateBuild(); await save();
+  app.uploadNote = `<div class="notice ok small">Создан проект из ${p.storyboard.shots.length} изображений. Порядок кадров — по именам файлов; его можно поменять в Сценарной (стрелки ↑↓).</div>` + (rej.length ? `<div class="notice bad small">Не загружено: ${rej.map(r => esc(r.name) + ': ' + esc(r.reason)).join('<br>')}</div>` : '');
+  if (list.length > 12) toast('Взяты первые 12 изображений — это максимум для ролика 30–45 с', 6000);
+  go('gallery');
+}
+function quickUploadHTML(id) {
+  return `<button class="btn big" id="${id}Btn" type="button">📁 Смонтировать из своих картинок</button><input type="file" accept="image/*" multiple class="file-in" id="${id}In" tabindex="-1" aria-hidden="true">`;
+}
+function bindQuickUpload(id, helpSel) {
+  const b = $('#' + id + 'Btn'), inp = $('#' + id + 'In'); if (!b) return;
+  b.onclick = () => openPicker(inp, $(helpSel));
+  inp.onchange = e => quickProjectFromFiles(e.target.files);
+}
+
 // ---------- ГЛАВНАЯ ----------
 async function viewHome() {
   app.projects = await store.listProjects();
@@ -158,8 +208,11 @@ async function viewHome() {
         <p class="muted">Система придумает сюжет, разложит его на кадры, подготовит промпты для изображений, смонтирует документальную запись с VHS-повреждениями и синхронным звуком, проверит и выдаст MP4 1080×1920.</p>
         <div class="row" style="margin-top:14px"><button class="btn primary big" id="newP">＋ Новый проект</button>
         <button class="btn big" id="autoP" title="${esc(MODE_HINT.auto)}">⚡ Автопилот</button>
+        ${quickUploadHTML('quick')}
         ${app.project ? `<button class="btn big ghost" id="contP">Продолжить «${esc(app.project.title)}»</button>` : ''}</div>
-        <p class="small dim" style="margin-top:10px">Режим: <b>${MODES[app.settings.mode]}</b> — ${esc(MODE_HINT[app.settings.mode])}</p>
+        <div id="quickHelp"></div>
+        <p class="small muted" style="margin-top:10px">Уже есть готовые картинки? «Смонтировать из своих картинок» — выберите их, и студия сразу соберёт монтаж, без идей и раскадровки.</p>
+        <p class="small dim" style="margin-top:6px">Режим: <b>${MODES[app.settings.mode]}</b> — ${esc(MODE_HINT[app.settings.mode])}</p>
       </div>
     </div>
     ${app.project ? `<div class="card" style="margin-top:16px"><h3>Текущий проект: ${esc(app.project.title)}</h3>${stepsHTML(app.project)}</div>` : ''}
@@ -177,6 +230,7 @@ async function viewHome() {
     </div>
   </div>`;
   $('#newP').onclick = startNewProject;
+  bindQuickUpload('quick', '#quickHelp');
   $('#autoP').onclick = async () => { app.settings.mode = 'auto'; await store.saveSettings(app.settings); startNewProject(); };
   if ($('#contP')) $('#contP').onclick = () => { const cur = progressSteps(app.project).find(s => !s.done); go(cur ? cur.k : 'archive'); };
   bindGo();
@@ -422,7 +476,15 @@ function viewScript() {
 
 // ---------- ГАЛЕРЕЯ ----------
 async function viewGallery() {
-  if (needProject('Галерея')) return;
+  if (!app.project || !app.project.storyboard) {
+    $('#main').innerHTML = `<div class="page"><h1>Галерея</h1><div class="card empty">
+      <p>${app.project ? 'У проекта ещё нет раскадровки.' : 'Нет открытого проекта.'}</p>
+      <p class="muted small">Загрузите свои картинки — студия сразу создаст из них проект и монтаж. Или начните с идеи: тогда студия придумает сюжет и даст промпты для картинок.</p>
+      <div class="row" style="justify-content:center">${quickUploadHTML('gq')}<button class="btn" data-go="ideas">Начать с идеи</button></div><div id="gqHelp"></div></div></div>`;
+    bindGo(); bindQuickUpload('gq', '#gqHelp');
+    if (!app.project) { const b = document.querySelector('[data-go="ideas"]'); b.onclick = startNewProject; }
+    return;
+  }
   const p = app.project;
   if (!p.storyboard) { $('#main').innerHTML = `<div class="page"><h1>Галерея</h1><div class="card empty"><p>Сначала создайте раскадровку.</p><button class="btn primary" data-go="ideas">К идеям</button></div></div>`; bindGo(); return; }
   const shots = p.storyboard.shots;
@@ -485,20 +547,7 @@ async function viewGallery() {
   };
   // Открыть выбор файлов. Если окно выбора не появилось (так бывает во встроенных окнах
   // приложений на Android), через 2 с показываем, как обойти.
-  const pick = inp => {
-    inp.value = '';
-    let opened = false;
-    const mark = () => { opened = true; };
-    window.addEventListener('blur', mark, { once: true });
-    document.addEventListener('visibilitychange', mark, { once: true });
-    inp.addEventListener('change', mark, { once: true });
-    inp.addEventListener('cancel', mark, { once: true });
-    inp.click();
-    setTimeout(() => {
-      if (opened || document.hidden || !$('#pickHelp')) return;
-      $('#pickHelp').innerHTML = `<div class="notice warn small" style="text-align:left"><b>Окно выбора файлов не открылось.</b> Похоже, студия открыта во встроенном окне приложения, которое не разрешает выбирать файлы (так бывает в приложении Claude на Android). Что сделать:<br>1. Откройте ссылку на студию в браузере Chrome — там загрузка работает. Ваши проекты в Chrome будут отдельными: каждый браузер хранит свои данные.<br>2. Или скопируйте картинку и вставьте её в поле выше: долгое нажатие → «Вставить».</div>`;
-    }, 2000);
-  };
+  const pick = inp => openPicker(inp, $('#pickHelp'));
   $('#pickFiles').onclick = () => pick($('#files'));
   // изображения, которые Claude положил в хранилище страницы из чата
   (async () => {

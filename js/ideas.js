@@ -151,6 +151,21 @@ const BEATS_BY_COUNT = {
   9: ['open', 'establish', 'build', 'detail', 'build', 'tension', 'reveal', 'climax', 'ending'],
   10: ['open', 'establish', 'build', 'detail', 'build', 'tension', 'detail', 'reveal', 'climax', 'ending'],
 };
+// Раскадровка-заготовка под готовые изображения пользователя (без идеи)
+export function storyboardFromImages(n, settings) {
+  const base = BEATS_BY_COUNT[Math.max(6, Math.min(10, n))];
+  const beats = Array.from({ length: n }, (_, i) => n === 1 ? 'reveal' : base[Math.round(i * (base.length - 1) / (n - 1))]);
+  const target = settings.targetDuration || 38;
+  const per = Math.max(2.2, Math.min(7.5, (target - 4) / n));
+  const shots = beats.map((b, i) => ({
+    id: uid('sh'), n: i + 1, beat: b, duration: Math.round(per * 10) / 10,
+    content: `Ваше изображение ${i + 1}`, composition: COMPOSITION[b], camera: { move: 'auto', intensity: b === 'climax' ? 0.9 : 0.6 },
+    light: '', vfx: VFX[b], vfxLevel: b === 'climax' ? 1.2 : b === 'open' ? 0.7 : 1, sound: SOUND[b], transition: 'auto', function: FUNCTION[b],
+    images: [], activeImage: 0, enabled: true, prompt: '', promptEdited: true,
+  }));
+  return { shots, approved: true, createdAt: Date.now(), plannedDuration: shots.reduce((a, x) => a + x.duration, 0), source: 'Из ваших изображений' };
+}
+
 export const BEAT_NAMES = { open: 'Завязка', establish: 'Место действия', build: 'Продвижение', detail: 'Улика', tension: 'Нарастание', reveal: 'Раскрытие', climax: 'Кульминация', ending: 'Финал' };
 
 const COMPOSITION = {
