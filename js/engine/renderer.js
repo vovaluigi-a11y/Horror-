@@ -267,15 +267,17 @@ export class Renderer {
 
   _osd(S, W, H) {
     const o = S.osd;
+    const T = S.title;
     const blinkOn = Math.floor(S.t * 2) % 2 === 0;
-    const key = o ? [o.tl, o.tr, o.bl, o.br, blinkOn, W, H].join('|') : '';
-    if (key === this.osdKey) return !!o;
+    const key = T ? 'T|' + T.lines.join('\n') + '|' + T.cursor + '|' + W : o ? [o.tl, o.tr, o.bl, o.br, blinkOn, W, H].join('|') : '';
+    if (key === this.osdKey) return !!(o || T);
     this.osdKey = key;
-    if (!o) return false;
+    if (!o && !T) return false;
     const c = this.osdCanvas;
     c.width = Math.round(W / 2); c.height = Math.round(H / 2);
     const g = c.getContext('2d');
     g.clearRect(0, 0, c.width, c.height);
+    if (T) { this._drawTitle(g, c, T); return this._uploadOsd(c); }
     const fs = Math.round(c.width * 0.052);
     g.font = `bold ${fs}px "Courier New", ui-monospace, monospace`;
     g.textBaseline = 'top';
@@ -295,6 +297,41 @@ export class Renderer {
     }
     draw(o.bl, pad, c.height - pad * 1.6 - fs, 'left');
     draw(o.br, c.width - pad, c.height - pad * 1.6 - fs, 'right');
+    return this._uploadOsd(c);
+  }
+
+  // Титр: моноширинный текст терминала с переносом строк и мигающим курсором
+  _drawTitle(g, c, T) {
+    const fs = Math.round(c.width * 0.056);
+    g.font = `bold ${fs}px "Courier New", ui-monospace, monospace`;
+    g.textBaseline = 'top'; g.textAlign = 'left';
+    const x0 = c.width * 0.08, maxW = c.width * 0.84, lh = fs * 1.45;
+    const wrap = line => {
+      const out = []; let cur = '';
+      for (const w of line.split(' ')) { const test = cur ? cur + ' ' + w : w; if (g.measureText(test).width > maxW && cur) { out.push(cur); cur = w; } else cur = test; }
+      out.push(cur); return out;
+    };
+    // позиции строк считаются по полному тексту — блок не «прыгает», пока текст печатается
+    const full = (T.full || T.lines).map(wrap);
+    const totalRows = full.reduce((a, r) => a + r.length, 0);
+    const y0 = c.height * 0.5 - totalRows * lh / 2;
+    let rowIdx = 0, lastRow = null;
+    T.lines.forEach((line, li) => {
+      const rows = wrap(line);
+      rows.forEach((text, k) => {
+        const y = y0 + (rowIdx + k) * lh;
+        g.shadowColor = 'rgba(150,255,170,0.55)'; g.shadowBlur = fs * 0.5;
+        g.fillStyle = 'rgba(214,236,206,0.95)';
+        if (text) g.fillText(text, x0, y);
+        if (li === T.cursorLine) lastRow = { x: x0 + g.measureText(text).width, y };
+      });
+      rowIdx += full[li].length;
+    });
+    g.shadowBlur = 0;
+    if (T.cursor && lastRow) { g.fillStyle = 'rgba(214,236,206,0.9)'; g.fillRect(lastRow.x + fs * 0.12, lastRow.y + fs * 0.05, fs * 0.55, fs * 0.95); }
+  }
+
+  _uploadOsd(c) {
     const gl = this.gl;
     gl.activeTexture(gl.TEXTURE5);
     gl.bindTexture(gl.TEXTURE_2D, this.osdTex);

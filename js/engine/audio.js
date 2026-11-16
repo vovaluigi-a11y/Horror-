@@ -182,6 +182,26 @@ function genStingers(edl, n, r) {
         const v = lp.p(r() * 2 - 1) * Math.pow(u, 3) * 0.5 + Math.sin(6.2832 * 220 * (1 + u * 0.06) * i / SR) * Math.pow(u, 4) * 0.08;
         L[k] += v; R[k] += v;
       }
+    } else if (st.type === 'scream') {
+      // СКРИМЕР: удар + искажённый «крик» (пила с вибрато, формантный шум) + визг
+      const m = S(1.15);
+      const f0 = 520 + r() * 180;
+      let ph1 = 0, ph2 = 0, ph3 = 0;
+      const bp1 = new Biquad('bp', 1100, 3), bp2 = new Biquad('bp', 2600, 4), lp = new Biquad('lp', 7000, 0.7);
+      for (let i = 0; i < m && i0 + i < n; i++) {
+        const tt = i / SR, u = i / m;
+        const env = Math.min(1, tt / 0.006) * Math.exp(-tt * 2.1) * (u > 0.62 ? Math.max(0, 1 - (u - 0.62) / 0.38) : 1);
+        const f = f0 * (1.25 - 0.45 * u) * (1 + 0.06 * Math.sin(6.2832 * 7.5 * tt) + 0.02 * Math.sin(6.2832 * 31 * tt));
+        ph1 += f / SR; ph2 += f * 1.5 / SR; ph3 += (2900 + 900 * Math.sin(6.2832 * 11 * tt)) / SR;
+        const saw = (ph1 % 1) * 2 - 1, saw2 = (ph2 % 1) * 2 - 1;
+        const nz = r() * 2 - 1;
+        let v = (saw * 0.5 + saw2 * 0.3) + bp1.p(nz) * 2.2 + bp2.p(nz) * 1.4 + Math.sin(6.2832 * ph3) * 0.25;
+        v = Math.tanh(v * 2.6) * 0.9;                                        // грубое искажение
+        const boom = Math.sin(6.2832 * (60 * Math.exp(-tt * 3) + 32) * tt) * Math.exp(-tt * 3.2) * 1.2;
+        const hit = nz * Math.exp(-tt * 30) * 0.9;
+        const out = lp.p(v * env * 0.95) + boom + hit;
+        L[i0 + i] += out; R[i0 + i] += out * 0.94 + saw2 * env * 0.04;
+      }
     } else if (st.type === 'thump') {
       const m = S(0.6);
       for (let i = 0; i < m && i0 + i < n; i++) { const tt = i / SR; const v = Math.sin(6.2832 * (60 - 25 * tt) * tt) * Math.exp(-tt * 7) * 0.8; L[i0 + i] += v; R[i0 + i] += v; }
@@ -198,6 +218,35 @@ function genStingers(edl, n, r) {
   return [L, R];
 }
 
+// Клавиатура: звук каждого напечатанного символа титра (синхронно с текстом)
+function genKeys(edl, n, r) {
+  const [L, R] = track(n);
+  const T = edl.title;
+  if (!T) return [L, R];
+  for (const k of T.keys) {
+    const i0 = S(k.t);
+    const big = k.kind === 'enter', sp = k.kind === 'space';
+    const amp = (big ? 0.85 : sp ? 0.5 : 0.45 + r() * 0.25);
+    const fThock = big ? 120 : sp ? 150 : 170 + r() * 60;
+    const fClick = 2500 + r() * 2500;
+    const hp = new Biquad('hp', 1800, 0.7);
+    const m = S(big ? 0.09 : 0.05);
+    const pan = (r() * 2 - 1) * 0.3;
+    for (let i = 0; i < m && i0 + i < n; i++) {
+      const tt = i / SR;
+      const click = hp.p(r() * 2 - 1) * Math.exp(-tt * 900) * 1.2 + Math.sin(6.2832 * fClick * tt) * Math.exp(-tt * 600) * 0.3;
+      const thock = Math.sin(6.2832 * fThock * tt) * Math.exp(-tt * (big ? 45 : 70)) * 0.8;
+      // отпускание клавиши — второй тихий щелчок
+      const rel = tt > 0.028 ? hp.p(r() * 2 - 1) * Math.exp(-(tt - 0.028) * 1200) * 0.35 : 0;
+      const v = (click + thock + rel) * amp;
+      L[i0 + i] += v * (1 - pan); R[i0 + i] += v * (1 + pan);
+    }
+  }
+  // тихий гул кинескопа под титром
+  for (let i = S(T.start); i < Math.min(n, S(T.end)); i++) { const tt = i / SR; const v = Math.sin(6.2832 * 15734 / 4 * tt) * 0.006 + Math.sin(6.2832 * 50 * tt) * 0.02; L[i] += v; R[i] += v; }
+  return [L, R];
+}
+
 // Огибающая тишины (общая для всех дорожек, кроме акцентов, звучащих после неё)
 function duckEnvelope(edl, n) {
   const env = new Float32Array(n).fill(1);
@@ -205,11 +254,11 @@ function duckEnvelope(edl, n) {
   const introN = S(edl.introDur);
   for (let i = 0; i < introN && i < n; i++) env[i] = 0.6 + 0.4 * (i / introN);
   for (const s of edl.silences) {
-    const a = S(s.t), b = S(s.t + s.dur), ramp = S(0.06);
+    const a = S(s.t), b = S(s.t + s.dur), ramp = S(s.ramp ?? 0.06);
     for (let i = Math.max(0, a - ramp); i < Math.min(n, b + ramp); i++) {
       let g = 0.02;
       if (i < a) g = 1 - (i - (a - ramp)) / ramp * 0.98;
-      else if (i > b) g = 0.02 + (i - b) / ramp * 0.98;
+      else if (i > b) g = s.lull ? 1 : 0.02 + (i - b) / ramp * 0.98; // после затишья звук возвращается сразу, с ударом
       env[i] = Math.min(env[i], g);
     }
   }
@@ -231,6 +280,7 @@ export function synthesizeTracks(edl) {
     clicks: genClicks(edl, n, rng(base + 404)),
     digital: genDigital(edl, n, rng(base + 505)),
     stingers: genStingers(edl, n, rng(base + 606)),
+    keys: genKeys(edl, n, rng(base + 707)),
   };
   const duck = duckEnvelope(edl, n);
   return { n, tracks, duck };
@@ -240,12 +290,12 @@ export function synthesizeTracks(edl) {
 export function mixTracks(synth, trackCfg, master = 0.9) {
   const { n, tracks, duck } = synth;
   const L = new Float32Array(n), R = new Float32Array(n);
-  const gains = { drone: 0.9, hiss: 0.5, radio: 0.45, clicks: 0.6, digital: 0.55, stingers: 0.85 };
+  const gains = { drone: 0.9, hiss: 0.5, radio: 0.45, clicks: 0.6, digital: 0.55, stingers: 0.85, keys: 0.7 };
   for (const [id, [tl, tr]] of Object.entries(tracks)) {
     const cfg = trackCfg[id] || { on: true, vol: 0.6 };
     if (!cfg.on || cfg.vol <= 0) continue;
     const g = gains[id] * cfg.vol;
-    const ducked = id !== 'stingers' && id !== 'digital';
+    const ducked = id !== 'stingers' && id !== 'digital' && id !== 'keys';
     for (let i = 0; i < n; i++) { const d = ducked ? duck[i] : (id === 'digital' ? Math.max(duck[i], 0.5) : 1); L[i] += tl[i] * g * d; R[i] += tr[i] * g * d; }
   }
   // мягкий лимитер + защита от NaN

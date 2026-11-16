@@ -17,6 +17,7 @@ function frameStats(gl, W, H) {
 
 const STATIC_T = 0.012; // ≈1% ширины кадра в секунду
 export async function runQC({ project, edl, analyses, synth, mix, settings, getBlob, onProgress }) {
+  const shotsN = seg => project.storyboard.shots.find(x => x.id === seg.shotId)?.n ?? '?';
   const items = [];
   const add = (id, title, status, details, fix) => items.push({ id, title, status, details, fix });
   const P = edl.params;
@@ -26,8 +27,15 @@ export async function runQC({ project, edl, analyses, synth, mix, settings, getB
   if (edl.duration < minD - 0.05 || edl.duration > maxD + 0.05) add('duration', 'Продолжительность', 'fail', `${edl.duration.toFixed(1)} с — вне диапазона ${minD}–${maxD} с.`, 'fixDuration');
   else add('duration', 'Продолжительность', 'ok', `${edl.duration.toFixed(1)} с (диапазон ${minD}–${maxD} с), ${edl.frames} кадров при ${edl.fps} FPS.`);
 
-  // ---------- 2. Повторы движений ----------
-  const moves = edl.segments.map(s => s.move);
+  // ---------- 1б. Титр и скример ----------
+  if (edl.title) add('title', 'Титр «откуда эта запись»', 'ok', `${edl.title.lines.join(' / ')} — печатается ${(edl.title.dur).toFixed(1)} с, ${edl.title.keys.length} нажатий клавиш со звуком.`);
+  else add('title', 'Титр «откуда эта запись»', 'warn', 'Титр выключен или пуст. Зритель не узнает, откуда эта запись.', 'fixTitle');
+  if (edl.scream) {
+    const prev = edl.segments[edl.scream.segIndex - 1];
+    add('scream', 'Скример', 'ok', `Изображение кадра ${edl.scream.shotN}${edl.scream.auto ? ' (выбрано автоматически: фигура ближе к центру, контраст, роль в истории)' : ' (выбрано вами)'}; затишье ${(edl.scream.start - edl.scream.lullFrom).toFixed(1)} с, удар на ${edl.scream.start.toFixed(2)} с${prev ? `, после кадра ${shotsN(prev)}` : ''}.`);
+  } else add('scream', 'Скример', 'warn', 'Скример выключен или для него недостаточно кадров (нужно минимум 2).', 'fixScream');
+
+  const moves = edl.segments.filter(s => !s.scream).map(s => s.move);
   const consec = moves.filter((m, i) => i && m === moves[i - 1]).length;
   const counts = {}; moves.forEach(m => counts[m] = (counts[m] || 0) + 1);
   const over = Object.entries(counts).filter(([, c]) => c > 2);
@@ -36,7 +44,7 @@ export async function runQC({ project, edl, analyses, synth, mix, settings, getB
   else add('moves', 'Разнообразие движений камеры', 'ok', `${Object.keys(counts).length} разных движений на ${moves.length} кадров, повторов подряд нет.`);
 
   // ---------- 3. Переходы ----------
-  const trs = edl.transitions.map(t => t.type);
+  const trs = edl.transitions.filter(t => !t.forced).map(t => t.type); // склейки вокруг скримера — намеренные
   const tcons = trs.filter((m, i) => i && m === trs[i - 1]).length;
   const tc = {}; trs.forEach(m => tc[m] = (tc[m] || 0) + 1);
   const tover = Object.entries(tc).filter(([k, c]) => c > (k === 'cut' ? 3 : 2));
@@ -81,7 +89,7 @@ export async function runQC({ project, edl, analyses, synth, mix, settings, getB
   const seq = [];
   if (missing.length) seq.push(`без изображений: кадры ${missing.map(s => s.n).join(', ')} (исключены из монтажа)`);
   const order = ['open', 'establish', 'build', 'detail', 'tension', 'reveal', 'climax', 'ending'];
-  const beats = edl.segments.map(s => order.indexOf(s.beat));
+  const beats = edl.segments.filter(s => !s.scream).map(s => order.indexOf(s.beat));
   const back = beats.filter((b, i) => i && b >= 0 && beats[i - 1] >= 0 && b < beats[i - 1] - 2).length;
   if (back) seq.push(`драматургия «откатывается назад» ${back} раз(а)`);
   // визуальная согласованность: выброс по яркости/насыщенности/оттенку
@@ -96,7 +104,7 @@ export async function runQC({ project, edl, analyses, synth, mix, settings, getB
 
   // ---------- 8. Исходные изображения ----------
   const imgIssues = [];
-  for (const s of edl.segments) for (const is of (s.analysis?.issues || [])) imgIssues.push(`кадр ${shots.find(x => x.id === s.shotId)?.n}: ${is.text}`);
+  for (const s of edl.segments.filter(x => !x.scream)) for (const is of (s.analysis?.issues || [])) imgIssues.push(`кадр ${shots.find(x => x.id === s.shotId)?.n}: ${is.text}`);
   add('images', 'Технические дефекты исходников', imgIssues.some(t => !t.includes('автоматически')) ? 'warn' : 'ok', imgIssues.length ? imgIssues.join('\n') : 'Разрешение, экспозиция и пропорции в норме.');
 
   // ---------- 9. Анализ отрендеренных кадров ----------
@@ -153,7 +161,7 @@ export async function runQC({ project, edl, analyses, synth, mix, settings, getB
   }
   renderer.dispose();
   const staticSegs = [];
-  segMotion.forEach((m, i) => { if (m.maxRun > 2.2) staticSegs.push({ i, run: m.maxRun }); });
+  segMotion.forEach((m, i) => { if (m.maxRun > 2.2 && !edl.segments[i].scream && !(edl.segments[i].lullFrom)) staticSegs.push({ i, run: m.maxRun }); });
   window.__qcMotion = segMotion.map(m => [m.n ? m.sum / m.n : 0, m.maxRun]);
   if (staticSegs.length) add('static', 'Статичные сцены (по реальным кадрам)', 'fail', staticSegs.map(s => `кадр ${shots.find(x => x.id === edl.segments[s.i].shotId)?.n}: ${s.run.toFixed(1)} с почти без изменений изображения`).join('; '), 'fixStatic');
   else add('static', 'Статичные сцены (по реальным кадрам)', 'ok', `Проанализировано ${analyzed} отрендеренных кадров: нет участков дольше 2.2 с без движения. Среднее межкадровое изменение по сценам: ${segMotion.map(m => m.n ? (m.sum / m.n * 1000).toFixed(1) : '—').join(' / ')} (×10⁻³).`);
@@ -201,6 +209,8 @@ export function applyFix(project, fix, edl, settings) {
       P.moveStrength = Math.min(1, P.moveStrength + 0.15); P.shake = Math.min(1, P.shake + 0.1);
       return 'Усилены движения камеры и ручная съёмка в статичных сценах (сценарий не изменён — изменены только настройки монтажа).';
     }
+    case 'fixTitle': e.title = e.title || {}; e.title.on = true; e.title.auto = true; e.title.forIdea = null; return 'Титр включён (текст составлен по идее).';
+    case 'fixScream': e.screamer = { on: true, shotId: 'auto' }; return 'Скример включён, изображение выбирается автоматически.';
     case 'fixBorders': P.parallax = Math.max(0, P.parallax - 0.2); return 'Параллакс уменьшен, запас кадрирования увеличен.';
     case 'fixExposure': P.contrast = Math.max(0.3, P.contrast - 0.1); P.lift = Math.min(0.5, P.lift + 0.08); P.exposureHunt = Math.max(0.1, P.exposureHunt - 0.15); return 'Скорректированы контраст, тени и автоэкспозиция.';
   }

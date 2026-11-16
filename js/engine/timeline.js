@@ -37,6 +37,7 @@ export const MOVES = {
   parallax_dolly: { name: 'Боковой проезд с параллаксом', motion: 0.85 },
   breathing: { name: 'Напряжённое «дыхание» в руках', motion: 0.45 },
   locked_cctv: { name: 'Статичная камера + цифровой шаг зума', motion: 0.3 },
+  scream: { name: 'Скример', motion: 1, special: true },
 };
 
 export const TRANSITIONS = {
@@ -68,10 +69,10 @@ const GLITCH_PARAM = { green_band: 'greenBands', rgb_split: 'rgbGlitch', tear: '
 // ---------- Выбор движения камеры ----------
 function chooseMove(shot, an, prev, used, r, osd, ov) {
   const want = (ov && ov.move && ov.move !== 'auto') ? ov.move : shot.camera?.move;
-  if (want && want !== 'auto' && MOVES[want]) return want;
+  if (want && want !== 'auto' && MOVES[want] && !MOVES[want].special) return want;
   const beat = shot.beat || 'build';
   const scores = {};
-  for (const k of Object.keys(MOVES)) scores[k] = 1;
+  for (const k of Object.keys(MOVES)) if (!MOVES[k].special) scores[k] = 1;
   const a = an || { aspect: 0.66, orientation: 'balanced', focus: { x: 0.5, y: 0.5 }, peaks: [], mean: 0.3, std: 0.18 };
   // композиция
   if (a.aspect > 0.75) { scores.pan_lr += 2.2; scores.pan_rl += 2.2; scores.parallax_dolly += 1.5; }
@@ -129,6 +130,44 @@ function chooseTransition(prevShot, nextShot, prevT, used, r, i, n, ov) {
   return best;
 }
 
+// ---------- Титр («откуда эта запись») ----------
+// Строки печатаются по буквам, как на терминале; каждое нажатие — звук клавиатуры.
+function buildTitle(cfg, start, fps, r) {
+  if (!cfg || cfg.on === false) return null;
+  const lines = (cfg.lines || []).map(x => String(x || '').trim()).filter(Boolean).slice(0, 6);
+  if (!lines.length) return null;
+  const chars = lines.reduce((a, l) => a + l.length, 0);
+  const typing = Math.min(3.4, Math.max(1.2, chars * 0.045)); // титр не должен съедать ролик: ~5 с максимум
+  const per = typing / Math.max(1, chars);
+  const keys = [];
+  let t = start + 0.35;
+  lines.forEach((l, li) => {
+    for (let ci = 0; ci < l.length; ci++) {
+      if (l[ci] !== ' ') keys.push({ t: Math.round(t * 1000) / 1000, li, ci: ci + 1, kind: 'key' });
+      else keys.push({ t: Math.round(t * 1000) / 1000, li, ci: ci + 1, kind: 'space' });
+      t += per * (0.55 + r() * 0.9);
+    }
+    keys.push({ t: Math.round(t * 1000) / 1000, li, ci: l.length, kind: 'enter' });
+    t += 0.14 + r() * 0.1;
+  });
+  const hold = 0.9;
+  const dur = Math.round((t - start + hold + 0.15) * fps) / fps;
+  return { start, dur, end: start + dur, lines, keys };
+}
+
+// Насколько изображение подходит для скримера: фигура/лицо в центре, контраст, роль кадра
+function screamScore(a, beat) {
+  let s = { reveal: 3, climax: 3.2, tension: 1.6, detail: 0.6, build: 0.4, ending: -0.5, establish: -0.8, open: -1.2 }[beat] ?? 0;
+  if (a) {
+    const off = Math.hypot(a.focus.x - 0.5, a.focus.y - 0.45);
+    s += (0.35 - Math.min(0.35, off)) * 6;            // главный объект ближе к центру
+    s += Math.min(1, (a.peaks?.[0]?.v || 0) * 3) * 1.5; // выраженная точка интереса
+    s += Math.min(0.3, a.std) * 5;                     // контраст
+    if (a.mean > 0.65) s -= 1.5;                       // слишком светлый кадр пугает хуже
+  }
+  return s;
+}
+
 // ---------- Построение EDL ----------
 export function buildEDL(project, analyses, settings) {
   const edit = project.edit;
@@ -139,34 +178,71 @@ export function buildEDL(project, analyses, settings) {
   const shots = (project.storyboard?.shots || []).filter(s => s.images && s.images.length && s.enabled !== false);
   if (!shots.length) throw new Error('Нет кадров с изображениями. Загрузите изображения в Галерее.');
 
-  const introDur = clamp(project.edit.introDur ?? 2.2, 1.2, 4);
+  // --- вступление: чёрный экран с помехами (noiseDur), затем печатающийся титр ---
+  const noiseDur = clamp(project.edit.introDur ?? 2.2, 1.2, 4);
+  const title = buildTitle(edit.title, noiseDur, fps, r);
+  const introDur = noiseDur + (title ? title.dur : 0); // начало показа кадров
   const outroDur = clamp(project.edit.outroDur ?? 1.8, 1.0, 4);
-  let durs = shots.map(s => clamp(Number(s.duration) || 4, 1.8, 9));
+
+  // --- скример: выбор изображения ---
+  const scrCfg = edit.screamer || { on: true, shotId: 'auto' };
+  let screamShot = null;
+  if (scrCfg.on !== false && shots.length >= 2) {
+    if (scrCfg.shotId && scrCfg.shotId !== 'auto') screamShot = shots.find(s => s.id === scrCfg.shotId) || null;
+    if (!screamShot) {
+      let best = -1e9;
+      for (const sh of shots) {
+        const img = sh.images[Math.min(sh.activeImage || 0, sh.images.length - 1)];
+        const sc = screamScore(analyses[img.imageId], sh.beat);
+        if (sc > best) { best = sc; screamShot = sh; }
+      }
+    }
+  }
+  const SCREAM_DUR = 0.8;
+
+  let durs = shots.map(s => clamp(Number(edit.overrides?.[s.id]?.duration ?? s.duration) || 4, 1.8, 9));
   const minD = settings.minDuration || 30, maxD = settings.maxDuration || 45;
   const target = clamp(project.edit.targetDuration || settings.targetDuration || 38, minD, maxD);
+  const fixed = introDur + outroDur + (screamShot ? SCREAM_DUR : 0);
   // подгонка под целевую длительность (с учётом пределов на кадр)
   for (let iter = 0; iter < 6; iter++) {
-    const total = introDur + outroDur + durs.reduce((a, b) => a + b, 0);
+    const total = fixed + durs.reduce((a, b) => a + b, 0);
     if (Math.abs(total - target) < 0.05) break;
-    const k = (target - introDur - outroDur) / durs.reduce((a, b) => a + b, 0);
+    const k = (target - fixed) / durs.reduce((a, b) => a + b, 0);
     durs = durs.map(d => clamp(d * k, 2.2, 7.5));
   }
   // квантование по кадрам
   durs = durs.map(d => Math.round(d * fps) / fps);
 
+  // порядок показа: кадры раскадровки + скример перед финальным кадром
+  const order = shots.map((sh, i) => ({ sh, i }));
+  let screamPos = -1;
+  if (screamShot) {
+    const endIdx = shots.findIndex(s => s.beat === 'ending');
+    screamPos = endIdx > 0 ? endIdx : shots.length - 1;
+    order.splice(screamPos, 0, { scream: true, sh: screamShot });
+  }
+
   const segments = [];
   let t = introDur;
   const usedMoves = {};
   let prevMove = null;
-  shots.forEach((sh, i) => {
+  order.forEach((o) => {
+    const sh = o.sh;
     const img = sh.images[Math.min(sh.activeImage || 0, sh.images.length - 1)];
     const an = analyses[img.imageId];
+    if (o.scream) {
+      const d = Math.round(SCREAM_DUR * fps) / fps;
+      segments.push({ i: segments.length, shotId: null, screamOf: sh.id, scream: true, imageId: img.imageId, start: t, end: t + d, move: 'scream', intensity: 1, beat: 'climax', analysis: an || null, seed: Math.floor(r() * 1e6), dir: 1, focusStart: 0, expStart: 0, vfx: 1 });
+      t += d;
+      return;
+    }
     const ov = edit.overrides?.[sh.id] || {};
     const move = chooseMove(sh, an, prevMove, usedMoves, r, edit.osd, ov);
     usedMoves[move] = (usedMoves[move] || 0) + 1; prevMove = move;
     const intensity = clamp((ov.intensity ?? sh.camera?.intensity ?? 0.6) * (0.5 + P.moveStrength), 0.15, 1.3);
     segments.push({
-      i, shotId: sh.id, imageId: img.imageId, start: t, end: t + durs[i], move, intensity,
+      i: segments.length, shotId: sh.id, imageId: img.imageId, start: t, end: t + durs[o.i], move, intensity,
       beat: sh.beat || 'build', analysis: an || null,
       seed: Math.floor(r() * 1e6),
       dir: r() < 0.5 ? -1 : 1,
@@ -174,20 +250,34 @@ export function buildEDL(project, analyses, settings) {
       expStart: (r() * 2 - 1) * 0.35 * P.exposureHunt,
       vfx: sh.vfxLevel ?? 1,
     });
-    t += durs[i];
+    t += durs[o.i];
   });
   const showEnd = t;
   const duration = Math.round((showEnd + outroDur) * fps) / fps;
+  const screamSeg = segments.find(s => s.scream) || null;
+  let scream = null;
+  if (screamSeg) {
+    const prev = segments[screamSeg.i - 1];
+    const lullFrom = prev ? Math.max(prev.start + 0.6, screamSeg.start - 1.4) : screamSeg.start;
+    if (prev) prev.lullFrom = lullFrom;
+    scream = { start: screamSeg.start, end: screamSeg.end, lullFrom, segIndex: screamSeg.i, shotId: screamShot.id, shotN: screamShot.n, auto: !(scrCfg.shotId && scrCfg.shotId !== 'auto') };
+  }
 
-  // переходы
+  // переходы (вокруг скримера — только жёсткие склейки: удар должен быть внезапным)
   const transitions = [];
   const usedT = {};
   let prevT = null;
   for (let i = 0; i < segments.length - 1; i++) {
-    const type = chooseTransition(shots[i], shots[i + 1], prevT, usedT, r, i, segments.length, edit.overrides?.[shots[i].id]);
-    usedT[type] = (usedT[type] || 0) + 1; prevT = type;
+    const A = segments[i], B = segments[i + 1];
+    let type;
+    if (A.scream || B.scream) type = 'cut';
+    else {
+      const shA = shots.find(x => x.id === A.shotId), shB = shots.find(x => x.id === B.shotId);
+      type = chooseTransition(shA, shB, prevT, usedT, r, i, segments.length, edit.overrides?.[A.shotId]);
+      usedT[type] = (usedT[type] || 0) + 1; prevT = type;
+    }
     const def = TRANSITIONS[type];
-    transitions.push({ at: segments[i].end, type, pre: def.pre / fps, post: def.post / fps, a: i, b: i + 1 });
+    transitions.push({ at: A.end, type, pre: def.pre / fps, post: def.post / fps, a: i, b: i + 1, forced: A.scream || B.scream });
   }
 
   // кривая напряжения: рост к кульминации (~82%), спад в финале
@@ -212,6 +302,7 @@ export function buildEDL(project, analyses, settings) {
     tt += -Math.log(1 - r() * 0.98) / rate;
     if (tt >= showEnd - 0.4) break;
     if (isBusy(tt)) continue;
+    if (scream && tt > scream.lullFrom - 0.3 && tt < scream.end + 0.3) continue;
     const seg = segments.find(s => tt >= s.start && tt < s.end);
     if (!seg || seg.vfx === 0) continue;
     if (glitches.length && tt - glitches[glitches.length - 1].t < 0.55) continue;
@@ -226,6 +317,7 @@ export function buildEDL(project, analyses, settings) {
   }
   // обязательные акценты: «вклей-зум» и шаг цифрового зума маскируются глитчем
   for (const s of segments) {
+    if (scream && s.end > scream.lullFrom - 0.3 && s.start < scream.end) continue;
     if (s.move === 'snap_zoom' || s.move === 'locked_cctv') {
       const at = s.start + (s.end - s.start) * 0.46;
       const tq = Math.round(at * fps) / fps;
@@ -236,14 +328,14 @@ export function buildEDL(project, analyses, settings) {
   glitches.sort((a, b) => a.t - b.t);
 
   // вступление: чёрный экран, помехи, подсознательный кадр
-  const intro = { dur: introDur, bursts: [], subliminal: null };
+  const intro = { dur: introDur, noiseDur, bursts: [], subliminal: null };
   let it = 0.15 + r() * 0.2;
-  while (it < introDur - 0.5) {
+  while (it < noiseDur - 0.5) {
     intro.bursts.push({ t: Math.round(it * fps) / fps, dur: (2 + Math.floor(r() * 4)) / fps, kind: pick(r, ['noise', 'band', 'tracking', 'noise']), amt: 0.35 + r() * 0.6 });
     it += 0.18 + r() * 0.45;
   }
-  const revealSeg = segments.find(s => s.beat === 'reveal' || s.beat === 'climax') || segments[segments.length - 1];
-  intro.subliminal = { t: Math.round((introDur * (0.45 + r() * 0.2)) * fps) / fps, dur: 2 / fps, seg: revealSeg.i };
+  const revealSeg = segments.find(s => !s.scream && (s.beat === 'reveal' || s.beat === 'climax')) || segments.filter(s => !s.scream).pop();
+  intro.subliminal = { t: Math.round((noiseDur * (0.45 + r() * 0.2)) * fps) / fps, dur: 2 / fps, seg: revealSeg.i };
   // «захват сигнала» на первом кадре
   intro.lock = { t: introDur, dur: 0.55 };
 
@@ -253,7 +345,7 @@ export function buildEDL(project, analyses, settings) {
   // тишина: перед раскрытием и после финального обрыва
   const silences = [];
   const stingers = [];
-  const revealIdx = segments.findIndex(s => s.beat === 'reveal' || s.beat === 'climax');
+  const revealIdx = segments.findIndex(s => !s.scream && (s.beat === 'reveal' || s.beat === 'climax'));
   if (revealIdx > 0) {
     const ts = segments[revealIdx].start;
     silences.push({ t: ts - 0.75, dur: 0.75 });
@@ -268,7 +360,13 @@ export function buildEDL(project, analyses, settings) {
     if (tr.type === 'flash') stingers.push({ t: tr.at, type: 'thump' });
   }
   // если раскрытия нет — акцент на кульминации
-  if (revealIdx < 0) stingers.push({ t: climaxT, type: 'impact' });
+  if (revealIdx < 0 && !scream) stingers.push({ t: climaxT, type: 'impact' });
+  if (scream) {
+    // затишье: звук плавно уходит почти в ноль, затем — удар и крик
+    for (let k = stingers.length - 1; k >= 0; k--) if (Math.abs(stingers[k].t - scream.start) < 1.6 && stingers[k].type !== 'final') stingers.splice(k, 1);
+    silences.push({ t: scream.lullFrom, dur: scream.start - scream.lullFrom, ramp: 0.5, lull: true });
+    stingers.push({ t: scream.start, type: 'scream' });
+  }
 
   // звуковые события, синхронные с визуальными сбоями (одна кадровая точность)
   const soundEvents = [];
@@ -280,12 +378,13 @@ export function buildEDL(project, analyses, settings) {
   for (const b of intro.bursts) soundEvents.push({ t: b.t, dur: b.dur, kind: b.kind === 'band' ? 'hum_buzz' : b.kind === 'tracking' ? 'warble' : 'noise_burst', amt: b.amt, src: 'intro' });
   soundEvents.push({ t: intro.subliminal.t, dur: intro.subliminal.dur, kind: 'digital_chirp', amt: 1, src: 'intro' });
   soundEvents.push({ t: showEnd, dur: outro.burst, kind: 'noise_burst', amt: 1, src: 'outro' });
+  if (scream) soundEvents.push({ t: scream.end - 0.17, dur: 0.17, kind: 'tape_crunch', amt: 1.1, src: 'scream' });
   soundEvents.push({ t: outro.subliminal.t, dur: outro.subliminal.dur, kind: 'digital_chirp', amt: 1, src: 'outro' });
   soundEvents.sort((a, b) => a.t - b.t);
 
   return {
-    fps, duration, frames: Math.round(duration * fps), introDur, outroDur, showEnd,
-    segments, transitions, glitches, intro, outro, silences, stingers, soundEvents,
+    fps, duration, frames: Math.round(duration * fps), introDur, noiseDur, outroDur, showEnd,
+    segments, transitions, glitches, intro, outro, silences, stingers, soundEvents, title, scream,
     params: P, osd: edit.osd, seed, climaxT,
     era: project.bible?.osdDate || null,
     tension,
@@ -326,12 +425,14 @@ function moveCamera(seg, u, a) {
     case 'rack_focus': { const c = towards(0.6); fx = c.x; fy = c.y; z = 1.1 + 0.1 * e * k; fx = lerp(fx, F.x, 0.2 * e); blur = (seg.dir > 0 ? (1 - smooth(u * 1.6)) : smooth((u - 0.55) * 2.2)) * 2.4; parZ = 0.35 * e; break; }
     case 'parallax_dolly': { fx = 0.5 + seg.dir * lerp(-0.22, 0.22, e) * k; fy = lerp(0.5, F.y, 0.3); z = 1.12; parX = seg.dir * (e - 0.5) * 2.4; break; }
     case 'breathing': { const c = towards(0.55); fx = c.x; fy = c.y; z = 1.12 + 0.09 * e * k + Math.sin(u * 6.28 * 1.3) * 0.01; fx += Math.sin(u * 2.3 + seg.seed) * 0.08; fy += Math.cos(u * 1.7 + seg.seed) * 0.05; parX = Math.sin(u * 5.1) * 0.5; parY = Math.cos(u * 3.7) * 0.35; break; }
+    case 'scream': { fx = lerp(0.5, F.x, 0.95); fy = lerp(0.5, F.y, 0.95); z = 2.05 + 0.55 * u; r = (seg.seed % 2 ? 1 : -1) * 0.03 * Math.sin(u * 40); break; }
     case 'locked_cctv': { const step = u < 0.46 ? 0 : 1; const c = towards(step ? 0.75 : 0); fx = c.x; fy = c.y; z = step ? 1.3 : 1.05; break; }
   }
   return { fx, fy, z, r, parX, parY, parZ, blur };
 }
 
 function shakeAmp(seg, P) {
+  if (seg.scream) return Math.max(1.6, 3 * P.shake);
   const base = { handheld_search: 1.3, breathing: 1.2, snap_zoom: 0.9, push_in: 0.7, pull_out: 0.7, drift: 0.6, rack_focus: 0.6, pan_lr: 0.75, pan_rl: 0.75, tilt_down: 0.7, tilt_up: 0.7, parallax_dolly: 0.55, locked_cctv: 0.05 }[seg.move] ?? 0.7;
   return base * P.shake;
 }
@@ -375,13 +476,15 @@ function segmentAt(edl, t) {
 function cameraFor(edl, seg, t, P) {
   const u = clamp((t - seg.start) / (seg.end - seg.start), 0, 1);
   const cam = moveCamera(seg, u, seg.analysis);
-  const A = shakeAmp(seg, P) * (0.75 + edl.tension(t) * 0.5);
+  let A = shakeAmp(seg, P) * (0.75 + edl.tension(t) * 0.5);
+  if (seg.lullFrom && t > seg.lullFrom) A *= Math.max(0.15, 1 - (t - seg.lullFrom) / 0.6); // затишье: камера почти замирает
   const sd = seg.seed;
   // три октавы: покачивание, «руки», микродрожь
   const sx = vnoise(t * 0.45, sd) * 0.012 + vnoise(t * 1.6, sd + 3) * 0.005 + vnoise(t * 8, sd + 7) * 0.0012;
   const sy = vnoise(t * 0.4, sd + 11) * 0.010 + vnoise(t * 1.4, sd + 17) * 0.004 + vnoise(t * 9, sd + 19) * 0.0011;
   const sr = (vnoise(t * 0.35, sd + 23) * 0.006 + vnoise(t * 2.1, sd + 29) * 0.002) * A;
   cam.fx += sx * A; cam.fy += sy * A; cam.r += sr;
+  if (seg.scream) { cam.fx += vnoise(t * 26, sd + 51) * 0.025; cam.fy += vnoise(t * 23, sd + 53) * 0.02; cam.r += vnoise(t * 19, sd + 57) * 0.03; }
   // покачивание масштаба от «шагов» оператора
   cam.z += Math.abs(vnoise(t * 1.1, sd + 31)) * 0.008 * A;
   // автофокус и автоэкспозиция после склейки
@@ -435,6 +538,18 @@ export function stateAt(edl, t) {
   // --- вступление ---
   if (t < edl.introDur) {
     S.fade = 0; S.osd = null; // индикация появляется только после захвата сигнала
+    const T = edl.title;
+    if (T && t >= T.start) {
+      // титр: текст печатается по буквам на чёрном экране, лёгкий шум кинескопа
+      const shown = T.lines.map(() => '');
+      let lastLi = 0;
+      for (const k of T.keys) { if (k.t > t) break; shown[k.li] = T.lines[k.li].slice(0, k.ci); lastLi = k.kind === 'enter' ? Math.min(T.lines.length - 1, k.li + 1) : k.li; }
+      const out = t > T.end - 0.16;
+      S.title = out ? null : { lines: shown, full: T.lines, cursorLine: lastLi, cursor: Math.floor(t * 2.6) % 2 === 0 };
+      S.noise = out ? 0.75 : 0.035 + 0.01 * Math.sin(t * 9);
+      S.events.push(out ? 'title:out' : 'title');
+      return S;
+    }
     for (const b of edl.intro.bursts) {
       if (t >= b.t && t < b.t + b.dur) {
         if (b.kind === 'noise') { S.noise = b.amt; S.fade = 0.0; }
@@ -478,6 +593,18 @@ export function stateAt(edl, t) {
   const c = cameraFor(edl, seg, camT, P);
   S.A = { seg, cam: c.cam };
   S.blur = c.blur; S.exposure = c.exposure;
+  if (seg.scream) {
+    // СКРИМЕР: вспышка, лицо/фигура крупно, тряска, жёсткий контраст, срыв изображения в конце
+    const u = (t - seg.start) / (seg.end - seg.start);
+    S.flash = u < 0.08 ? 1 - u / 0.08 : 0;
+    S.exposure = 0.3 + 0.15 * Math.sin(t * 60); S.blur = 0;
+    S.contrast = Math.min(1, P.contrast + 0.4); S.sat = P.saturation * 0.55; S.warmth = Math.max(P.warmth, 0.72);
+    S.rgb = 5 + 7 * hash(frame * 1.7); S.jitter = 0.55; S.vignette = Math.min(1, P.vignette + 0.35); S.lift = 0;
+    S.flicker = 0.15;
+    if (u > 0.78) { const q = (u - 0.78) / 0.22; S.tear = 1; S.block = 0.7; S.noise = 0.25 + 0.6 * q; }
+    S.events.push('scream');
+    return S;
+  }
 
   // мерцание / нестабильность
   S.flicker = (vnoise(t * 9, edl.seed) * 0.5 + 0.5) * 0.06 * P.flicker;

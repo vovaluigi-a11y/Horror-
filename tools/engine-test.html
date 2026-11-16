@@ -26,6 +26,9 @@ window.runTest = async (opts = {}) => {
   log('assigned', rep.map(r => r.name + '->' + r.shot).join(', '));
   const t0 = performance.now();
   const { edl, synth, mix, analyses } = await buildEdit(p, settings);
+  log('title', edl.title ? edl.title.lines.join(' / ') + ' dur ' + edl.title.dur.toFixed(2) + ' keys ' + edl.title.keys.length : 'none');
+  log('scream', edl.scream ? JSON.stringify({ shot: edl.scream.shotN, start: edl.scream.start.toFixed(2), lull: edl.scream.lullFrom.toFixed(2) }) : 'none');
+  opts.frameTimes = opts.frameTimes || [0.5, edl.title ? edl.title.start + edl.title.dur * 0.35 : 3, edl.title ? edl.title.end - 0.4 : 4, edl.introDur + 2, 14, 22, edl.scream ? edl.scream.lullFrom + 0.6 : 28, edl.scream ? edl.scream.start + 0.03 : 30, edl.scream ? edl.scream.start + 0.35 : 31, edl.scream ? edl.scream.end - 0.08 : 33];
   log('edl', edl.duration.toFixed(2), 's frames', edl.frames, 'moves', edl.segments.map(s=>s.move).join(','), 'tr', edl.transitions.map(t=>t.type).join(','), 'glitches', edl.glitches.length, 'build ms', (performance.now()-t0).toFixed(0));
   // кадры-образцы
   const c = document.createElement('canvas'); c.width = 540; c.height = 960;

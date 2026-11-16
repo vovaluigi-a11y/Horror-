@@ -5,7 +5,8 @@ import { analyzeImage, loadBitmap } from './analyze.js';
 import { buildEDL } from './engine/timeline.js';
 import { synthesizeTracks, mixTracks } from './engine/audio.js';
 import { BUILTIN_TEMPLATES, templateById, editFromTemplate } from './templates.js';
-import { FORMATS } from './content.js';
+import { FORMATS, LOCATIONS } from './content.js';
+import { TRACKS } from './templates.js';
 
 export function newProject(settings, title = 'Новый проект') {
   const t = templateById(settings.defaultTemplate);
@@ -108,8 +109,46 @@ export async function collectAnalyses(project) {
 
 export async function getBlob(imageId) { const r = await getImage(imageId); return r?.blob; }
 
+// Текст титра «откуда эта запись» по идее и библии проекта
+export function defaultTitleLines(project) {
+  const idea = project.idea || {};
+  const parts = idea.parts || {};
+  const d = project.bible?.osdDate || { y: 1996, m: 10, d: 14, h: 2, min: 13 };
+  const p2 = n => String(n).padStart(2, '0');
+  // устойчивый «номер объекта» из названия проекта
+  let h = 0; for (const ch of (idea.title || project.title || 'x')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  const num = 3 + (h % 47);
+  const loc = LOCATIONS.find(l => l.id === parts.location);
+  let place = loc ? loc.name : (parts.location && typeof parts.location === 'string' ? parts.location : '');
+  place = place ? place.toUpperCase() + (/\d/.test(place) ? '' : ` №${num}`) : `АРХИВНАЯ ЗАПИСЬ №${num}`;
+  const fmt = FORMATS.find(f => f.id === parts.format);
+  const lines = [place, `${p2(d.d)}.${p2(d.m)}.${d.y}  ${p2(d.h)}:${p2(d.min)}`];
+  if (fmt) {
+    lines.push('ИСТОЧНИК: ' + fmt.name.toLowerCase());
+    if (fmt.found.length <= 60) lines.push(fmt.found[0].toUpperCase() + fmt.found.slice(1) + '.');
+  } else if (parts.format && typeof parts.format === 'string') {
+    lines.push('ИСТОЧНИК: ' + parts.format);
+  } else {
+    lines.push('ИСТОЧНИК НЕ УСТАНОВЛЕН');
+    lines.push('Запись публикуется без изменений.');
+  }
+  return lines;
+}
+
+// Значения по умолчанию для новых возможностей монтажа (и для старых проектов)
+export function ensureEditDefaults(project) {
+  const e = project.edit;
+  for (const t of TRACKS) if (!e.tracks[t.id]) e.tracks[t.id] = { on: true, vol: t.id === 'keys' ? 0.75 : 0.6 };
+  if (!e.title) e.title = { on: true, lines: defaultTitleLines(project), auto: true };
+  else if (e.title.auto && project.idea && e.title.forIdea !== project.idea.id) { e.title.lines = defaultTitleLines(project); }
+  if (project.idea) e.title.forIdea = project.idea.id;
+  if (!e.screamer) e.screamer = { on: true, shotId: 'auto' };
+  if (!e.editLog) e.editLog = [];
+}
+
 // Сборка: EDL + синтез дорожек + сведение
 export async function buildEdit(project, settings) {
+  ensureEditDefaults(project);
   const analyses = await collectAnalyses(project);
   if (project.bible?.osdDate) project.edit.osdDate = project.bible.osdDate;
   const edl = buildEDL(project, analyses, settings);

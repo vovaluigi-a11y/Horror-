@@ -7,7 +7,8 @@ export const TRACKS = [
   { id: 'radio', name: 'Радиопомехи' },
   { id: 'clicks', name: 'Электрические щелчки' },
   { id: 'digital', name: 'Цифровые сбои (синхр. с глитчами)' },
-  { id: 'stingers', name: 'Тревожные акценты' },
+  { id: 'stingers', name: 'Тревожные акценты и скример' },
+  { id: 'keys', name: 'Клавиатура (титр)' },
 ];
 
 export const PARAM_DEFS = [

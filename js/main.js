@@ -1,6 +1,8 @@
 // HORROR STUDIO — интерфейс.
 import * as store from './store.js';
-import { newProject, applyIdea, addImages, buildEdit, getBlob, collectAnalyses, getAnalysis } from './pipeline.js';
+import { newProject, applyIdea, addImages, buildEdit, getBlob, collectAnalyses, getAnalysis, ensureEditDefaults, defaultTitleLines } from './pipeline.js';
+import { isReady, describeState, aiEditPrompt, parseEditsLocal, applyOps } from './edits.js';
+import { extractJSON } from './bridge.js';
 import { generateIdeas, reworkIdea, generateStoryboard, recomputePrompts, buildPrompt, BEAT_NAMES, storyboardFromImages } from './ideas.js';
 import { ideasRequest, storyboardRequest, imageRequest, allImagesRequest, parseIdeas, parseStoryboard } from './bridge.js';
 import { BUILTIN_TEMPLATES, PARAM_DEFS, TRACKS, templateById, editFromTemplate } from './templates.js';
@@ -371,7 +373,7 @@ function viewScript() {
   const sb = p.storyboard, locked = !!sb.approved, manual = app.settings.mode === 'manual';
   const total = sb.shots.filter(s => s.enabled !== false).reduce((a, s) => a + Number(s.duration || 0), 0);
   const dis = locked ? 'disabled' : '';
-  const moveOpts = sel => `<option value="auto">Авто (по композиции и драматургии)</option>` + Object.entries(MOVES).map(([k, v]) => `<option value="${k}" ${sel === k ? 'selected' : ''}>${v.name}</option>`).join('');
+  const moveOpts = sel => `<option value="auto">Авто (по композиции и драматургии)</option>` + Object.entries(MOVES).filter(([, v]) => !v.special).map(([k, v]) => `<option value="${k}" ${sel === k ? 'selected' : ''}>${v.name}</option>`).join('');
   const trOpts = sel => `<option value="auto">Авто</option>` + Object.entries(TRANSITIONS).map(([k, v]) => `<option value="${k}" ${sel === k ? 'selected' : ''}>${v.name}</option>`).join('');
   const beatOpts = sel => Object.entries(BEAT_NAMES).map(([k, v]) => `<option value="${k}" ${sel === k ? 'selected' : ''}>${v}</option>`).join('');
   $('#main').innerHTML = `<div class="page">
@@ -703,12 +705,13 @@ async function drawTimeline() {
   let h = '';
   for (const s of edl.segments) {
     const url = await store.imageURL(s.imageId);
-    h += `<div class="seg" style="left:${pct(s.start)};width:${pct(s.end - s.start)};background-image:url('${url}')" title="${esc(MOVES[s.move].name)}"><span>${esc(MOVES[s.move].name.split(' ')[0])}</span></div>`;
+    h += `<div class="seg" style="left:${pct(s.start)};width:${pct(s.end - s.start)};background-image:url('${url}')" title="${esc(MOVES[s.move].name)}" ${s.scream ? 'data-scream="1"' : ''}><span>${s.scream ? '⚡ СКРИМЕР' : esc(MOVES[s.move].name.split(' ')[0])}</span></div>`;
   }
   for (const t of edl.transitions) h += `<div class="tr" style="left:${pct(t.at - t.pre)};width:${pct(Math.max(1 / 30, t.pre + t.post))}" title="${esc(TRANSITIONS[t.type].name)}"></div>`;
   for (const g of edl.glitches) h += `<div class="gl" style="left:${pct(g.t)}" title="${esc(GLITCHES[g.type].name)} ${g.t.toFixed(2)} с"></div>`;
   for (const s of edl.soundEvents) h += `<div class="se" style="left:${pct(s.t)};width:${pct(s.dur)}"></div>`;
   for (const s of edl.silences) h += `<div class="si" style="left:${pct(s.t)};width:${pct(s.dur)}" title="Тишина"></div>`;
+  if (edl.title) h += `<div class="ti" style="left:${pct(edl.title.start)};width:${pct(edl.title.dur)}" title="Титр"><span>ТИТР</span></div>`;
   h += `<div class="ph" id="ph"></div>`;
   el.innerHTML = h;
   el.onpointerdown = e => {
@@ -722,6 +725,7 @@ async function drawTimeline() {
 async function viewMontage() {
   if (needProject('Монтажная')) return;
   const p = app.project;
+  if (p.edit) ensureEditDefaults(p);
   const has = (p.storyboard?.shots || []).some(s => (s.images || []).length && s.enabled !== false);
   if (!has) { $('#main').innerHTML = `<div class="page"><h1>Монтажная</h1><div class="card empty"><p>Нет кадров с изображениями.</p><button class="btn primary" data-go="gallery">В галерею</button></div></div>`; bindGo(); return; }
   const tpls = [...BUILTIN_TEMPLATES, ...app.userTemplates];
@@ -733,17 +737,25 @@ async function viewMontage() {
     <div class="page-head"><div><h1>Монтажная</h1><p>Документальный монтаж собирается автоматически: движение камеры выбирается по композиции и драматургии каждого кадра, сбои — по кривой напряжения, звук синхронизирован со сбоями.</p></div>
       <div class="row"><span class="small muted" id="buildState"></span><button class="btn" id="reroll" title="Другая комбинация движений, переходов и сбоев">🎲 Другой вариант монтажа</button>
       ${p.edit.approved ? '<span class="tag ok">Монтаж одобрен</span>' : '<button class="btn" id="approveEdit">Одобрить монтаж</button>'}
-      <button class="btn primary" id="exportBtn">Экспорт MP4</button></div></div>
+      <button class="btn primary" id="exportBtn" disabled title="Сначала напишите «готово» в поле «Правки»">Экспорт MP4</button></div></div>
     <div class="editor">
       <div class="viewer">
         <div class="screen"><canvas id="cv"></canvas><div class="ovl" id="ovl">Сборка монтажа…</div></div>
         <div class="transport"><button class="btn" id="play">▶ Смотреть</button><button class="btn sm ghost" id="rew">⏮</button><span class="time" id="tm">0:00.0</span></div>
+        <div class="card edits">
+          <h3 style="margin-bottom:4px">Правки</h3>
+          <p class="small muted" style="margin:0 0 8px">Напишите обычными словами, что переделать, — или «<b>готово</b>», если правок нет. Пока поле пустое, экспорт не запустится.</p>
+          <textarea id="editsText" placeholder="Например: во 2 кадре камера медленнее; меньше зелёных полос; гул громче; скример из кадра 5; титр: Городская больница №13; 14.10.1996 02:13">${esc(app.editsDraft || '')}</textarea>
+          <div class="row" style="margin-top:8px"><button class="btn primary" id="runEdits" disabled>Напишите правки или «готово»</button><span class="small muted" id="editsState"></span></div>
+          <div id="editsResult">${app.lastEditResult || ''}</div>
+          ${(p.edit.editLog || []).length ? `<details style="margin-top:8px"><summary class="small">История правок (${p.edit.editLog.length})</summary>${p.edit.editLog.slice(0, 20).map(l => `<div class="small" style="padding:6px 0;border-bottom:1px solid var(--line)"><span class="dim">${fmtDate(l.at)}</span> — «${esc(l.text)}»<br><span class="muted">${l.changes.map(esc).join('; ') || 'без изменений'}</span></div>`).join('')}</details>` : ''}
+        </div>
         <div id="exportBox"></div>
       </div>
       <div style="min-width:0">
         <div class="timeline" id="tl"></div>
         <div class="legend"><span><i style="background:rgba(224,72,62,.6)"></i>переходы</span><span><i style="background:#7be08b"></i>глитчи</span><span><i style="background:rgba(217,164,65,.8)"></i>синхронные звуки</span><span><i style="background:rgba(107,156,207,.6)"></i>тишина</span></div>
-        <div class="tabs" style="margin-top:14px">${[['effects', 'Эффекты'], ['sound', 'Звук'], ['shots', 'Кадры'], ['plan', 'Монтажный план'], ['templates', 'Шаблоны']].map(([k, n]) => `<button data-tab="${k}" class="${tab === k ? 'on' : ''}">${n}</button>`).join('')}</div>
+        <div class="tabs" style="margin-top:14px">${[['effects', 'Эффекты'], ['story', 'Титр и скример'], ['sound', 'Звук'], ['shots', 'Кадры'], ['plan', 'Монтажный план'], ['templates', 'Шаблоны']].map(([k, n]) => `<button data-tab="${k}" class="${tab === k ? 'on' : ''}">${n}</button>`).join('')}</div>
         <div id="tabBody">
         ${tab === 'effects' ? `
           <div class="row" style="margin-bottom:10px"><label class="f" style="flex:1;margin:0"><span>Стиль (шаблон)</span><select id="tpl">${tpls.map(t => `<option value="${t.id}" ${p.edit.templateId === t.id ? 'selected' : ''}>${esc(t.name)}${t.builtin ? '' : ' (мой)'}</option>`).join('')}</select></label>
@@ -762,10 +774,20 @@ async function viewMontage() {
         ${tab === 'shots' ? `<div class="card"><h4>Настройки кадров для монтажа</h4><p class="small muted">Эти назначения хранятся в монтаже и не меняют утверждённый сценарий. «Авто» — движок выбирает сам.</p>
             ${p.storyboard.shots.filter(s => (s.images || []).length && s.enabled !== false).map(s => { const o = p.edit.overrides?.[s.id] || {}; return `<div class="grid g3" style="padding:8px 0;border-bottom:1px solid var(--line);align-items:end">
               <div><span class="shot-n">КАДР ${s.n}</span> <span class="small muted">${esc(BEAT_NAMES[s.beat])}</span><div class="small">${esc(s.content).slice(0, 90)}</div></div>
-              <label class="f" style="margin:0"><span>Движение камеры</span><select data-ov="${s.id}:move"><option value="auto">Авто${s.camera?.move && s.camera.move !== 'auto' ? ' (по сценарию: ' + esc(MOVES[s.camera.move]?.name || '') + ')' : ''}</option>${Object.entries(MOVES).map(([k, v]) => `<option value="${k}" ${o.move === k ? 'selected' : ''}>${v.name}</option>`).join('')}</select></label>
+              <label class="f" style="margin:0"><span>Движение камеры</span><select data-ov="${s.id}:move"><option value="auto">Авто${s.camera?.move && s.camera.move !== 'auto' ? ' (по сценарию: ' + esc(MOVES[s.camera.move]?.name || '') + ')' : ''}</option>${Object.entries(MOVES).filter(([, v]) => !v.special).map(([k, v]) => `<option value="${k}" ${o.move === k ? 'selected' : ''}>${v.name}</option>`).join('')}</select></label>
               <label class="f" style="margin:0"><span>Переход после</span><select data-ov="${s.id}:transition"><option value="auto">Авто</option>${Object.entries(TRANSITIONS).map(([k, v]) => `<option value="${k}" ${o.transition === k ? 'selected' : ''}>${v.name}</option>`).join('')}</select></label>
               <div></div><label class="f" style="margin:0"><span>Интенсивность движения ${(o.intensity ?? s.camera?.intensity ?? 0.6).toFixed(2)}</span><input type="range" min="0.1" max="1" step="0.05" data-ov="${s.id}:intensity" value="${o.intensity ?? s.camera?.intensity ?? 0.6}"></label>
             </div>`; }).join('')}</div>` : ''}
+        ${tab === 'story' ? `<div class="card"><h4>Титр — откуда эта запись</h4>
+            <p class="small muted">После чёрного экрана с помехами текст печатается по буквам со звуком клавиатуры. Каждая строка — с новой строки. Составлен автоматически по идее; можно переписать.</p>
+            <label class="row small" style="margin-bottom:6px"><input type="checkbox" id="titleOn" ${p.edit.title?.on !== false ? 'checked' : ''}> Показывать титр</label>
+            <textarea id="titleLines" style="min-height:110px;font-family:var(--mono)">${esc((p.edit.title?.lines || []).join('\n'))}</textarea>
+            <div class="row" style="margin-top:6px"><button class="btn sm" id="titleSave">Сохранить титр</button><button class="btn sm ghost" id="titleAuto">Составить заново по идее</button></div></div>
+          <div class="card" style="margin-top:12px"><h4>Скример</h4>
+            <p class="small muted">Перед финалом — затишье: камера почти замирает, звук плавно уходит. Затем удар: вспышка, лицо или фигура крупно, тряска, искажения, громкий крик. Изображение выбирается автоматически: фигура ближе к центру, контраст, роль кадра (раскрытие, кульминация). ${app.build?.edl?.scream ? `Сейчас выбран <b>кадр ${app.build.edl.scream.shotN}</b>${app.build.edl.scream.auto ? ' (авто)' : ''}, удар на ${fmtT(app.build.edl.scream.start)}.` : ''}</p>
+            <label class="row small" style="margin-bottom:6px"><input type="checkbox" id="screamOn" ${p.edit.screamer?.on !== false ? 'checked' : ''}> Скример включён</label>
+            <label class="f"><span>Изображение для скримера</span><select id="screamShot"><option value="auto">Авто — система выбирает сама</option>${p.storyboard.shots.filter(s => (s.images || []).length && s.enabled !== false).map(s => `<option value="${s.id}" ${p.edit.screamer?.shotId === s.id ? 'selected' : ''}>Кадр ${s.n} — ${esc(BEAT_NAMES[s.beat] || '')}: ${esc(String(s.content || '').slice(0, 50))}</option>`).join('')}</select></label>
+            <button class="btn sm" id="screamPreview">Показать момент скримера</button></div>` : ''}
         ${tab === 'plan' ? `<div class="card"><h4>Решения режиссёра монтажа</h4><div id="edlInfo"></div></div>` : ''}
         ${tab === 'templates' ? `<div class="card"><h4>Библиотека шаблонов</h4><p class="small muted">Шаблон хранит все параметры эффектов, громкости дорожек и индикацию. Создайте удачный стиль один раз и применяйте в будущих роликах.</p>
             <div class="row"><input type="text" id="tplName" placeholder="Название моего стиля" style="max-width:320px"><button class="btn primary" id="saveTpl">Сохранить текущие настройки как шаблон</button></div>
@@ -779,7 +801,24 @@ async function viewMontage() {
   document.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { stopPlayback(); app.montageTab = b.dataset.tab; viewMontage(); });
   $('#reroll').onclick = () => { p.edit.seed = Math.floor(Math.random() * 1e9); p.edit.approved = false; scheduleRebuild(); toast('Новый вариант монтажа'); };
   if ($('#approveEdit')) $('#approveEdit').onclick = async () => { p.edit.approved = true; store.snapshot(p, 'Монтаж одобрен'); await save(); toast('Монтаж одобрен. Изменение параметров снимет одобрение.'); viewMontage(); };
-  $('#exportBtn').onclick = () => doExport();
+  // поле правок: экспорт только после «готово»
+  const et = $('#editsText'), rb = $('#runEdits');
+  const syncEdits = () => {
+    const v = et.value.trim();
+    app.editsDraft = et.value;
+    rb.disabled = !v || !!app.editsBusy;
+    rb.textContent = !v ? 'Напишите правки или «готово»' : isReady(v) ? 'Готово — экспорт MP4' : 'Применить правки';
+    $('#exportBtn').disabled = !isReady(v);
+  };
+  et.oninput = syncEdits; syncEdits();
+  rb.onclick = () => runEdits();
+  $('#exportBtn').onclick = () => { if (isReady(et.value)) doExport(); else { et.focus(); toast('Сначала напишите в поле «Правки» ваши правки или «готово»'); } };
+  if ($('#titleSave')) $('#titleSave').onclick = async () => { p.edit.title = { ...p.edit.title, on: $('#titleOn').checked, lines: $('#titleLines').value.split('\n').map(x => x.trim()).filter(Boolean).slice(0, 6), auto: false }; p.edit.approved = false; invalidateBuild(); await save(); toast('Титр сохранён'); viewMontage(); };
+  if ($('#titleOn')) $('#titleOn').onchange = async () => { p.edit.title.on = $('#titleOn').checked; p.edit.approved = false; invalidateBuild(); await save(); viewMontage(); };
+  if ($('#titleAuto')) $('#titleAuto').onclick = async () => { p.edit.title = { on: true, lines: defaultTitleLines(p), auto: true }; invalidateBuild(); await save(); viewMontage(); };
+  if ($('#screamOn')) $('#screamOn').onchange = async () => { p.edit.screamer = { ...p.edit.screamer, on: $('#screamOn').checked }; p.edit.approved = false; invalidateBuild(); await save(); viewMontage(); };
+  if ($('#screamShot')) $('#screamShot').onchange = async () => { p.edit.screamer = { on: true, shotId: $('#screamShot').value }; p.edit.approved = false; invalidateBuild(); await save(); viewMontage(); };
+  if ($('#screamPreview')) $('#screamPreview').onclick = () => { const sc = app.build?.edl?.scream; if (!sc) return toast('Скример выключен'); stopPlayback(); startPlayback(Math.max(0, sc.lullFrom - 1.5)); };
   document.querySelectorAll('[data-p]').forEach(r => r.oninput = () => { P[r.dataset.p] = +r.value; r.nextElementSibling.textContent = Math.round(r.value * 100); p.edit.approved = false; scheduleRebuild(); });
   if ($('#tpl')) $('#tpl').onchange = () => applyTemplate($('#tpl').value);
   if ($('#osd')) $('#osd').onchange = () => { p.edit.osd = $('#osd').value; scheduleRebuild(); };
@@ -822,21 +861,59 @@ async function viewMontage() {
   } catch (e) { if ($('#ovl')) $('#ovl').innerHTML = `<div class="notice bad">${esc(e.message)}</div>`; console.error(e); return; }
 
 }
+// Применение правок из поля «Правки» (или экспорт при «готово»)
+async function runEdits() {
+  const p = app.project;
+  const et = $('#editsText'); const text = (et?.value || '').trim();
+  if (!text) return;
+  if (isReady(text)) return doExport();
+  app.editsBusy = true;
+  const rb = $('#runEdits'); if (rb) { rb.disabled = true; rb.textContent = 'Разбираю правки…'; }
+  const st = $('#editsState');
+  try {
+    await ensureBuild();
+    let ops = null, reply = '', how = '';
+    if (hasAI()) {
+      try {
+        if (st) st.textContent = 'ИИ читает правки…';
+        const ans = extractJSON(await askAI(aiEditPrompt(text, describeState(p, app.build.edl))));
+        ops = Array.isArray(ans.ops) ? ans.ops : []; reply = String(ans.reply || ''); how = 'ИИ';
+      } catch (e) { console.warn('AI edits failed', e); ops = null; }
+    }
+    let notes = [];
+    if (!ops) { const r = parseEditsLocal(text); ops = r.ops; notes = r.notes; how = 'разбор по ключевым словам'; }
+    store.snapshot(p, 'Перед правками: ' + text.slice(0, 60));
+    const changes = applyOps(p, ops, app.build.edl);
+    p.edit.editLog = p.edit.editLog || [];
+    p.edit.editLog.unshift({ at: Date.now(), text, changes, how });
+    if (changes.length) { p.edit.approved = false; invalidateBuild(); }
+    await save();
+    app.lastEditResult = changes.length
+      ? `<div class="notice ok small"><b>Применено (${how}):</b><br>${changes.map(esc).join('<br>')}${reply ? `<br><span class="muted">${esc(reply)}</span>` : ''}${notes.length ? `<br><span class="status-warn">Не понял: ${notes.map(esc).join('; ')}</span>` : ''}<br>Посмотрите результат. Если всё хорошо — напишите «готово».</div>`
+      : `<div class="notice warn small">Не получилось понять правки${reply ? ': ' + esc(reply) : ''}. Попробуйте конкретнее, например: «кадр 3 медленнее», «меньше зелёных полос», «скример из кадра 5», «титр: Больница №13; 14.10.1996».</div>`;
+    app.editsDraft = changes.length ? '' : text;
+  } catch (e) {
+    app.lastEditResult = `<div class="notice bad small">Ошибка: ${esc(e.message)}</div>`;
+  } finally { app.editsBusy = false; }
+  viewMontage();
+}
+
 async function applyTemplate(id) {
   const p = app.project;
   const t = templateById(id, app.userTemplates);
-  const seed = p.edit.seed, ov = p.edit.overrides, td = p.edit.targetDuration, intro = p.edit.introDur, outro = p.edit.outroDur;
-  p.edit = { ...editFromTemplate(t), seed, overrides: ov, targetDuration: td, introDur: intro, outroDur: outro };
+  const keep = (({ seed, overrides, targetDuration, introDur, outroDur, title, screamer, editLog }) => ({ seed, overrides, targetDuration, introDur, outroDur, title, screamer, editLog }))(p.edit);
+  p.edit = { ...editFromTemplate(t), ...keep };
   invalidateBuild(); await save(); toast('Применён стиль: ' + t.name); viewMontage();
 }
 
 async function doExport({ auto = false } = {}) {
   const p = app.project;
   if (app.exportJob) return toast('Экспорт уже идёт');
-  if (!auto && app.settings.mode === 'director' && !p.edit.approved) {
-    if (!await confirmBox('Монтаж ещё не одобрен. Одобрить текущую версию и экспортировать MP4?', 'Одобрить и экспортировать')) return;
-    p.edit.approved = true; store.snapshot(p, 'Монтаж одобрен (экспорт)');
-  }
+  // экспорт запускается только словом «готово» в поле правок — это и есть одобрение монтажа
+  if (!p.edit.approved) { p.edit.approved = true; store.snapshot(p, 'Монтаж одобрен («готово»)'); }
+  p.edit.editLog = p.edit.editLog || [];
+  p.edit.editLog.unshift({ at: Date.now(), text: 'готово', changes: ['Экспорт MP4'], how: 'готово' });
+  app.lastEditResult = ''; app.editsDraft = '';
   stopPlayback();
   await ensureBuild();
   const box = $('#exportBox') || document.createElement('div');
@@ -1034,8 +1111,9 @@ async function autopilot() {
     toast('Автопилот: проверка пройдена' + (fixes?.length ? ', исправлено: ' + fixes.length : '') + '. Экспорт…', 5000);
     app.view = 'montage'; app.montageTab = 'plan';
     await viewMontage();
-    p.edit.approved = true; await save();
-    await doExport({ auto: true });
+    await save();
+    toast('Автопилот собрал и проверил монтаж. Посмотрите ролик и напишите в поле «Правки» ваши правки или «готово» — после «готово» начнётся экспорт MP4.', 10000);
+    $('#editsText')?.focus();
     app.autopilot = false;
   } catch (e) { toast('Автопилот остановлен: ' + e.message, 8000); console.error(e); app.autopilot = false; }
 }
