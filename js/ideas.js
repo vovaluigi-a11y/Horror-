@@ -40,8 +40,20 @@ export function preferenceProfile(history) {
   return { used, liked, recentAnomalies: history.slice(0, 30).map(h => h.idea?.parts?.anomaly).filter(Boolean) };
 }
 
-export function scoreIdea(parts, profile) {
-  const f = byId(FORMATS, parts.format), l = byId(LOCATIONS, parts.location), a = byId(ANOMALIES, parts.anomaly), e = byId(ENTITIES, parts.entity), en = byId(ENDINGS, parts.ending);
+// Элементы идеи: библиотечные по id или собственные (для «Моих идей» — idea.custom)
+export function resolveParts(idea) {
+  const p = idea.parts || {}, c = idea.custom || {};
+  return {
+    f: c.format || byId(FORMATS, p.format) || FORMATS[0],
+    l: c.location || byId(LOCATIONS, p.location) || LOCATIONS[0],
+    a: c.anomaly || byId(ANOMALIES, p.anomaly) || ANOMALIES[0],
+    e: c.entity || byId(ENTITIES, p.entity) || ENTITIES[0],
+    en: c.ending || byId(ENDINGS, p.ending) || ENDINGS[0],
+  };
+}
+
+export function scoreIdea(parts, profile, objs) {
+  const { f, l, a, e, en } = objs || { f: byId(FORMATS, parts.format), l: byId(LOCATIONS, parts.location), a: byId(ANOMALIES, parts.anomaly), e: byId(ENTITIES, parts.entity), en: byId(ENDINGS, parts.ending) };
   const usedPenalty = k => Math.min(2.5, (profile?.used?.[k] || 0) * 0.6);
   let originality = (f.orig * 0.25 + l.orig * 0.25 + a.orig * 0.3 + e.orig * 0.2) - (usedPenalty(parts.anomaly) * 0.6 + usedPenalty(parts.location) * 0.25 + usedPenalty(parts.ending) * 0.15);
   const affE = (AFFINITY[a.id] || []).includes(e.id), affL = (LOC_AFF[a.id] || []).includes(l.id);
@@ -67,19 +79,26 @@ export function scoreIdea(parts, profile) {
   return { total: Math.round(total * 10) / 10, crit, reason: why.join('; ') + '.' };
 }
 
-function buildIdea(parts, r, profile) {
-  const f = byId(FORMATS, parts.format), l = byId(LOCATIONS, parts.location), a = byId(ANOMALIES, parts.anomaly), e = byId(ENTITIES, parts.entity), en = byId(ENDINGS, parts.ending);
+// «снимает городскую больницу»: винительный падеж для первых двух слов женского рода
+export function accus(name) {
+  const w = String(name).split(' ');
+  for (let i = 0; i < Math.min(2, w.length); i++) w[i] = w[i].replace(/ая$/, 'ую').replace(/яя$/, 'юю').replace(/([^аеиоуыэюя])а$/i, '$1у').replace(/([^аеиоуыэюя])я$/i, '$1ю');
+  return w.join(' ');
+}
+
+function buildIdea(parts, r, profile, objs) {
+  const { f, l, a, e, en } = objs || { f: byId(FORMATS, parts.format), l: byId(LOCATIONS, parts.location), a: byId(ANOMALIES, parts.anomaly), e: byId(ENTITIES, parts.entity), en: byId(ENDINGS, parts.ending) };
   const year = Math.round(f.era[0] + r() * (f.era[1] - f.era[0]));
   const operator = parts.operator || OPERATORS[Math.floor(r() * OPERATORS.length)];
   const time = parts.time || TIMES[Math.floor(r() * TIMES.length)];
   const titleBase = a.title[Math.floor(r() * a.title.length)];
   const titleForms = [titleBase, `${titleBase}. ${l.name}, ${year}`, `${l.short[0].toUpperCase() + l.short.slice(1)}: ${titleBase.toLowerCase()}`, `Кассета №${Math.floor(r() * 90 + 10)}: ${titleBase.toLowerCase()}`];
   const title = titleForms[Math.floor(r() * titleForms.length)];
-  const s = scoreIdea(parts, profile);
+  const s = scoreIdea(parts, profile, objs);
   return {
     id: uid('i'),
     title,
-    logline: `${f.name} (${year}): ${operator} снимает ${l.name.toLowerCase()} ${time}. Постепенно становится ясно, что ${a.text}.${e.id !== 'absence' ? ' В кадре появляется ' + e.name.toLowerCase() + '.' : ''} ${f.found[0].toUpperCase() + f.found.slice(1)}.`,
+    logline: `${f.name} (${year}): ${operator} снимает ${accus(l.name).toLowerCase()} ${time}. Постепенно становится ясно, что ${a.text}.${e.id !== 'absence' ? ' В кадре появляется ' + e.name.toLowerCase() + '.' : ''} ${f.found[0].toUpperCase() + f.found.slice(1)}.`,
     visual: a.visual + '; ' + l.wide,
     detail: a.detail + '. Деталь места: ' + l.details[Math.floor(r() * l.details.length)] + '.',
     ending: en.text[0].toUpperCase() + en.text.slice(1) + '.',
@@ -88,6 +107,8 @@ function buildIdea(parts, r, profile) {
     source: 'Алгоритмический генератор',
   };
 }
+
+export { buildIdea, randomParts, weighted, AFFINITY, LOC_AFF };
 
 function randomParts(r, profile, keep = {}) {
   const liked = profile?.liked || {}, used = profile?.used || {};
@@ -203,8 +224,8 @@ const LIGHT_BY_BEAT = {
 
 export function generateStoryboard(idea, settings, opts = {}) {
   const r = rng(opts.seed || Date.now());
-  const f = byId(FORMATS, idea.parts.format) || FORMATS[0], l = byId(LOCATIONS, idea.parts.location) || LOCATIONS[0];
-  const a = byId(ANOMALIES, idea.parts.anomaly) || ANOMALIES[0], e = byId(ENTITIES, idea.parts.entity) || ENTITIES[0], en = byId(ENDINGS, idea.parts.ending) || ENDINGS[0];
+  const { f, l, a, e, en } = resolveParts(idea);
+  if (!idea.parts.time) idea.parts.time = TIMES[0];
   const target = settings.targetDuration || 24;
   const count = opts.count || Math.max(6, Math.min(8, Math.round((target - 7) / 2.6)));
   const beats = BEATS_BY_COUNT[count];

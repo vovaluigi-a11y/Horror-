@@ -4,6 +4,7 @@ import { newProject, applyIdea, addImages, buildEdit, getBlob, collectAnalyses, 
 import { isReady, describeState, aiEditPrompt, parseEditsLocal, applyOps } from './edits.js';
 import { extractJSON } from './bridge.js';
 import { generateIdeas, reworkIdea, generateStoryboard, recomputePrompts, buildPrompt, BEAT_NAMES, storyboardFromImages } from './ideas.js';
+import { makeOwnIdeas, ownIdeaRequest, parseOwnIdeas } from './ownideas.js';
 import { ideasRequest, storyboardRequest, imageRequest, allImagesRequest, parseIdeas, parseStoryboard } from './bridge.js';
 import { BUILTIN_TEMPLATES, PARAM_DEFS, TRACKS, templateById, editFromTemplate } from './templates.js';
 import { MOVES, TRANSITIONS, GLITCHES, buildEDL } from './engine/timeline.js';
@@ -273,17 +274,20 @@ function ideaCard(i, rank, top) {
   const liked = app.history.find(h => h.id === 'h_' + i.id)?.liked;
   const sel = app.project.idea?.id === i.id;
   const crit = i.crit ? `<div class="bars">${[['Оригинальность', i.crit.originality], ['Атмосфера', i.crit.atmosphere], ['Визуальность', i.crit.visual], ['Удержание', i.crit.retention]].map(([n, v]) => `<span>${n}</span><div class="bar"><i style="width:${v * 10}%"></i></div><span class="mono">${v.toFixed(1)}</span>`).join('')}</div>` : '';
-  return `<div class="card ${rank === 0 ? 'hl' : ''}" style="${sel ? 'outline:2px solid var(--ok)' : ''}">
+  const own = !!i.own;
+  const badge = own ? (rank === 0 ? '<span class="tag blue">Моя идея · лучший вариант</span> ' : '<span class="tag blue">Моя идея</span> ') : (rank === 0 ? '<span class="tag red">Рекомендую</span> ' : top ? '<span class="tag">Топ-3</span> ' : '');
+  return `<div class="card ${own ? 'idea-own' : 'idea-lib'} ${rank === 0 ? 'hl' : ''}" style="${sel ? 'outline:2px solid var(--ok)' : ''}">
     <div class="row" style="justify-content:space-between;align-items:flex-start;flex-wrap:nowrap">
-      <div style="min-width:0">${rank === 0 ? '<span class="tag red">Рекомендую</span> ' : top ? '<span class="tag">Топ-3</span> ' : ''}${sel ? '<span class="tag ok">Выбрана</span>' : ''}<h3 style="margin-top:6px">${esc(i.title)}</h3></div>
+      <div style="min-width:0">${badge}${sel ? '<span class="tag ok">Выбрана</span>' : ''}<h3 style="margin-top:6px">${esc(i.title)}</h3></div>
       <div class="score" title="Оценка">${i.score.toFixed(1)}</div></div>
+    ${own && i.userText ? `<div class="user-text small">Вы написали: «${esc(i.userText)}»</div>` : ''}
     <p>${esc(i.logline)}</p>
     <dl class="kv"><dt>Главный образ</dt><dd>${esc(i.visual)}</dd><dt>Пугающая деталь</dt><dd>${esc(i.detail)}</dd><dt>Финал</dt><dd>${esc(i.ending)}</dd></dl>
     ${crit}<p class="small muted"><b>Почему ${i.score.toFixed(1)}:</b> ${esc(i.reason)}</p>
     <p class="small dim">${esc(i.source || '')}</p>
     <div class="row"><button class="btn primary sm" data-pick="${i.id}">Выбрать эту идею</button>
       <button class="btn sm ${liked ? 'on' : ''}" data-like="${i.id}">${liked ? '★ Нравится' : '☆ Нравится'}</button>
-      <button class="btn sm" data-rework="${i.id}">↻ На переработку</button></div></div>`;
+      <button class="btn sm" data-rework="${i.id}">↻ ${own ? 'Другой вариант' : 'На переработку'}</button></div></div>`;
 }
 function viewIdeas() {
   if (needProject('Генератор идей')) return;
@@ -293,17 +297,26 @@ function viewIdeas() {
   $('#main').innerHTML = `<div class="page">
     <div class="page-head"><div><h1>Генератор идей</h1><p>10 сюжетов с оценкой по оригинальности, атмосфере, визуальности и удержанию. Три лучших — сверху, рекомендованный выделен. Понравившиеся элементы система учитывает в следующих генерациях, использованные — не повторяет.</p></div>
       <div class="row">${hasAI() ? '<button class="btn primary" id="genAI">✦ 10 идей от ИИ</button>' : ''}<button class="btn ${hasAI() ? '' : 'primary'}" id="gen">Сгенерировать 10 идей${hasAI() ? ' (встроенный)' : ''}</button><button class="btn" id="bridge">Идеи через ChatGPT…</button></div></div>
+    <div class="card own-box">
+      <h3 style="margin:0 0 4px">✎ Мои идеи</h3>
+      <p class="small muted" style="margin:0 0 8px">Напишите свою идею — хоть одно слово («больница»), хоть целый замысел («больница №13, ночью по коридору ходит врач без лица»). Студия сделает из неё 3 полноценных варианта: формат записи, аномалия, персонаж для скримера, финал, оценка — дальше всё как с обычными идеями.</p>
+      <textarea id="ownText" placeholder="Например: больница 13, врач в маске стоит в конце коридора">${esc(app.ownDraft || '')}</textarea>
+      <div class="row" style="margin-top:8px"><button class="btn blue" id="ownGo">✦ Сделать из этого идею</button><span class="small dim" id="ownState">${hasAI() ? 'Будет использована языковая модель среды; если она недоступна — встроенный алгоритм.' : 'Работает встроенный алгоритм (без интернета).'}</span></div>
+    </div>
+    ${(p.ownIdeas || []).length ? `<h4 class="own" style="margin-top:20px">Мои идеи (${p.ownIdeas.length})</h4><div class="grid g3">${p.ownIdeas.map((i, k) => ideaCard(i, k === 0 ? 0 : -1, false)).join('')}</div>` : ''}
     <div id="aiBox"></div>
     <div class="notice small">Встроенный генератор работает без интернета и платных API: он комбинирует авторскую библиотеку из ${'14 форматов записи, 22 мест, 25 аномалий, 12 существ и 13 финалов'} и оценивает сочетания по правилам. Это не нейросеть. Если хотите идеи уровня языковой модели — ${hasAI() ? 'кнопка «10 идей от ИИ» (языковая модель доступна прямо в этой среде, без ключей и доплат) или ' : ''}кнопка «Идеи через ChatGPT»: скопируйте готовый запрос в ChatGPT и вставьте ответ обратно, приложение разберёт его само.</div>
-    ${ideas.length ? `<h4 style="margin-top:20px">Лучшие три</h4><div class="grid g3">${top.map((i, k) => ideaCard(i, k, true)).join('')}</div>
+    ${ideas.length ? `<h4 style="margin-top:20px">Идеи студии — лучшие три</h4><div class="grid g3">${top.map((i, k) => ideaCard(i, k, true)).join('')}</div>
       ${rest.length ? `<h4 style="margin-top:24px">Остальные идеи</h4><div class="grid g3">${rest.map(i => ideaCard(i, -1, false)).join('')}</div>` : ''}` : '<div class="card empty">Нажмите «Сгенерировать 10 идей».</div>'}
     <details style="margin-top:24px"><summary>История идей (${app.history.length}) — не будут повторены</summary>
-      <div class="grid g2" style="margin-top:10px">${app.history.slice(0, 80).map(h => `<div class="card" style="padding:10px 12px"><div class="row" style="justify-content:space-between"><b>${esc(h.idea.title)}</b><span class="mono small">${h.idea.score?.toFixed?.(1) ?? ''} ${h.liked ? '★' : ''}</span></div><div class="small muted">${esc(h.idea.logline).slice(0, 180)}…</div><div class="row" style="margin-top:6px"><button class="btn sm" data-hpick="${h.id}">Использовать</button><button class="btn sm ghost" data-hdel="${h.id}">Удалить из истории</button></div></div>`).join('')}</div>
+      <div class="grid g2" style="margin-top:10px">${app.history.slice(0, 80).map(h => `<div class="card" style="padding:10px 12px;border-color:${h.idea.own ? 'var(--blue)' : 'var(--line)'}"><div class="row" style="justify-content:space-between"><b>${h.idea.own ? '<span class="tag blue">Моя</span> ' : ''}${esc(h.idea.title)}</b><span class="mono small">${h.idea.score?.toFixed?.(1) ?? ''} ${h.liked ? '★' : ''}</span></div><div class="small muted">${esc(h.idea.logline).slice(0, 180)}…</div><div class="row" style="margin-top:6px"><button class="btn sm" data-hpick="${h.id}">Использовать</button><button class="btn sm ghost" data-hdel="${h.id}">Удалить из истории</button></div></div>`).join('')}</div>
     </details></div>`;
   $('#gen').onclick = doGenerateIdeas;
   $('#bridge').onclick = bridgeIdeas;
   if ($('#genAI')) $('#genAI').onclick = () => aiIdeas();
-  const find = id => ideas.find(i => i.id === id);
+  const find = id => ideas.find(i => i.id === id) || (p.ownIdeas || []).find(i => i.id === id);
+  $('#ownText').oninput = e => { app.ownDraft = e.target.value; };
+  $('#ownGo').onclick = () => doOwnIdeas();
   document.querySelectorAll('[data-pick]').forEach(b => b.onclick = () => pickIdea(find(b.dataset.pick)));
   document.querySelectorAll('[data-like]').forEach(b => b.onclick = async () => {
     const rec = app.history.find(h => h.id === 'h_' + b.dataset.like) || { id: 'h_' + b.dataset.like, idea: find(b.dataset.like), projectId: p.id };
@@ -311,6 +324,13 @@ function viewIdeas() {
   });
   document.querySelectorAll('[data-rework]').forEach(b => b.onclick = async () => {
     const old = find(b.dataset.rework);
+    if (old.own) {
+      const nw = makeOwnIdeas(old.userText || old.title, app.history, 1, Date.now())[0];
+      const idx = p.ownIdeas.indexOf(old); p.ownIdeas[idx] = nw;
+      await store.saveIdeaRecord({ idea: nw, projectId: p.id, liked: false, id: 'h_' + nw.id });
+      app.history = await store.listIdeaHistory();
+      await save(); render(); toast(`Новый вариант вашей идеи: «${nw.title}» ${nw.score.toFixed(1)}`, 5000); return;
+    }
     const nw = reworkIdea(old, app.history, Date.now());
     const idx = p.ideas.indexOf(old); p.ideas[idx] = nw;
     p.ideas.sort((a, c) => c.score - a.score);
@@ -320,6 +340,30 @@ function viewIdeas() {
   });
   document.querySelectorAll('[data-hpick]').forEach(b => b.onclick = () => { const h = app.history.find(x => x.id === b.dataset.hpick); if (h) pickIdea(h.idea); });
   document.querySelectorAll('[data-hdel]').forEach(b => b.onclick = async () => { await store.deleteIdeaRecord(b.dataset.hdel); app.history = await store.listIdeaHistory(); render(); });
+}
+async function doOwnIdeas() {
+  const p = app.project;
+  const text = ($('#ownText').value || '').trim();
+  if (text.length < 3) { toast('Напишите идею — хотя бы одно слово, например «больница»'); $('#ownText').focus(); return; }
+  app.ownDraft = text;
+  const btn = $('#ownGo'), st = $('#ownState');
+  btn.disabled = true;
+  let ideas = null, note = '';
+  if (hasAI()) {
+    st.textContent = 'Языковая модель разворачивает вашу идею… ';
+    try {
+      const resp = await askAI(ownIdeaRequest(text, app.settings.styles.join(', ')), { onText: u => { st.textContent = `Языковая модель разворачивает вашу идею… (${u.text.length} симв.)`; } });
+      ideas = parseOwnIdeas(resp, text);
+    } catch (e) { note = 'Языковая модель не ответила (' + e.message + '), использован встроенный алгоритм.'; }
+  }
+  if (!ideas) { st.textContent = 'Встроенный алгоритм собирает идею…'; app.history = await store.listIdeaHistory(); ideas = makeOwnIdeas(text, app.history, 3, Date.now()); }
+  p.ownIdeas = [...ideas, ...(p.ownIdeas || [])].slice(0, 12);
+  for (const i of ideas) await store.saveIdeaRecord({ idea: i, projectId: p.id, liked: false, id: 'h_' + i.id });
+  app.history = await store.listIdeaHistory();
+  app.ownDraft = '';
+  await save(); render();
+  document.querySelector('h4.own')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  toast(`Готово: ${ideas.length} варианта вашей идеи (синие карточки)` + (note ? '. ' + note : ''), 6000);
 }
 async function aiIdeas() {
   const box = $('#aiBox'); const btn = $('#genAI');

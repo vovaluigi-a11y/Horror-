@@ -161,3 +161,19 @@ label.btn { position: relative; }
 .timeline .seg[data-scream] span { color: #fff; background: var(--red); padding: 0 3px; border-radius: 2px; }
 .card.edits { margin-top: 4px; border-color: var(--red); }
 .card.edits textarea { min-height: 84px; }
+/* Идеи: студийные — красная рамка, мои — синяя */
+:root { --blue: #3d7fe0; --blue2: #5b9bff; --bluebg: rgba(61, 127, 224, .13); }
+.card.idea-lib { border: 2px solid var(--red); }
+.card.idea-lib.hl { box-shadow: 0 0 0 1px var(--red2) inset, 0 0 18px rgba(196,55,47,.25); }
+.card.idea-own { border: 2px solid var(--blue); background: linear-gradient(180deg, var(--bluebg), var(--panel) 120px); }
+.card.idea-own.hl { box-shadow: 0 0 0 1px var(--blue2) inset, 0 0 18px rgba(61,127,224,.3); }
+.card.idea-own .score { color: var(--blue2); border-color: var(--blue); }
+.card.idea-own .bar i { background: var(--blue2); }
+.tag.blue { border-color: var(--blue); color: var(--blue2); }
+.card.own-box { border: 2px solid var(--blue); background: var(--bluebg); margin-top: 16px; }
+.card.own-box textarea { min-height: 70px; }
+.btn.blue { background: var(--blue); border-color: var(--blue); color: #fff; }
+.btn.blue:hover { background: var(--blue2); }
+h4.own { color: var(--blue2); }
+.user-text { border-left: 3px solid var(--blue); padding: 4px 10px; margin: 6px 0 8px; color: var(--muted); font-style: italic; }
+.idea-own .btn.primary { background: var(--blue); border-color: var(--blue); }

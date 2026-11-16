@@ -118,10 +118,10 @@ export function defaultTitleLines(project) {
   // устойчивый «номер объекта» из названия проекта
   let h = 0; for (const ch of (idea.title || project.title || 'x')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   const num = 3 + (h % 47);
-  const loc = LOCATIONS.find(l => l.id === parts.location);
+  const loc = idea.custom?.location || LOCATIONS.find(l => l.id === parts.location);
   let place = loc ? loc.name : (parts.location && typeof parts.location === 'string' ? parts.location : '');
   place = place ? place.toUpperCase() + (/\d/.test(place) ? '' : ` №${num}`) : `АРХИВНАЯ ЗАПИСЬ №${num}`;
-  const fmt = FORMATS.find(f => f.id === parts.format);
+  const fmt = idea.custom?.format || FORMATS.find(f => f.id === parts.format);
   const lines = [place, `${p2(d.d)}.${p2(d.m)}.${d.y}  ${p2(d.h)}:${p2(d.min)}`];
   if (fmt) {
     lines.push('ИСТОЧНИК: ' + fmt.name.toLowerCase());
