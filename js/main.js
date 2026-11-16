@@ -38,8 +38,11 @@ const fmtT = s => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}
 const fmtDate = t => new Date(t).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 function toast(msg, ms = 3500) {
+  let box = document.getElementById('toasts');
+  if (!box) { box = document.createElement('div'); box.id = 'toasts'; document.body.appendChild(box); }
   const d = document.createElement('div'); d.className = 'toast'; d.textContent = msg;
-  document.body.appendChild(d); setTimeout(() => d.remove(), ms);
+  box.appendChild(d); while (box.children.length > 3) box.firstChild.remove();
+  setTimeout(() => d.remove(), ms);
 }
 function modal(html, onMount) {
   const bg = document.createElement('div'); bg.className = 'modal-bg';
@@ -433,12 +436,15 @@ async function viewGallery() {
     <div class="page-head"><div><h1>Галерея</h1><p>Изображения для ${shots.length} кадров: готово ${withImg} из ${shots.length}. Промпты учитывают библию проекта, чтобы место, свет и персонаж совпадали между кадрами.</p></div>
       <div class="row"><button class="btn" id="allP">Все промпты одним сообщением</button><button class="btn" id="test" title="Процедурные рисунки только для проверки движка">Тестовые кадры</button>
       <button class="btn primary" data-go="montage" ${withImg ? '' : 'disabled'}>Дальше: монтаж →</button></div></div>
-    <div class="notice small"><b>Как получить изображения без API и доплат.</b> Опубликованное веб-приложение не может само вызвать генератор изображений ChatGPT — для этого нужен платный API, поэтому кнопки «сгенерировать» здесь нет. Порядок такой: нажмите «Копировать запрос» у кадра (или «Все промпты одним сообщением») → вставьте в ChatGPT → скачайте картинки → перетащите их сюда. Файлы распределятся по кадрам сами: по номеру в имени (shot_03.png, кадр 3.jpg) или по порядку в свободные кадры. Каждая картинка сразу анализируется: экспозиция, контраст, точки интереса, рамки, разрешение.</div>
+
     <div class="drop" id="drop">
       <button class="btn primary" id="pickFiles" type="button">Загрузить изображения</button>
       <input type="file" id="files" accept="image/*" multiple class="file-in" tabindex="-1" aria-hidden="true">
-      <div class="small muted" style="margin-top:8px">Можно выбрать сразу все кадры. Также можно перетащить файлы сюда или вставить картинку из буфера (Ctrl+V / «Вставить»).</div></div>
+      <div class="small muted" style="margin-top:8px">Можно выбрать сразу все кадры или перетащить файлы сюда.</div>
+      <div id="pasteBox" class="paste-box" contenteditable="true" inputmode="none" aria-label="Поле для вставки картинки">Или скопируйте картинку (в ChatGPT: долгое нажатие на картинку → «Копировать») и здесь: долгое нажатие → «Вставить». На компьютере — Ctrl+V.</div>
+      <div id="pickHelp"></div></div>
     <div id="upProg">${app.uploadNote || ''}</div>
+    <details class="notice small"><summary><b>Как получить изображения без API и доплат</b></summary> Опубликованное веб-приложение не может само вызвать генератор изображений ChatGPT — для этого нужен платный API, поэтому кнопки «сгенерировать» здесь нет. Порядок такой: нажмите «Копировать запрос» у кадра (или «Все промпты одним сообщением») → вставьте в ChatGPT → скачайте картинки → перетащите их сюда. Файлы распределятся по кадрам сами: по номеру в имени (shot_03.png, кадр 3.jpg) или по порядку в свободные кадры. Каждая картинка сразу анализируется: экспозиция, контраст, точки интереса, рамки, разрешение.</details>
     ${(p.unassigned || []).length ? `<div class="card" style="margin-top:14px"><h3>Нераспределённые изображения</h3><div class="row">${p.unassigned.map(im => `<div style="text-align:center"><div class="thumb"><img src="${urls[im.imageId]}"></div><select class="small" data-assign="${im.imageId}" style="width:90px;margin-top:4px"><option value="">в кадр…</option>${shots.map(s => `<option value="${s.id}">Кадр ${s.n}</option>`).join('')}</select></div>`).join('')}</div></div>` : ''}
     <div style="margin-top:16px">${shots.map(s => {
       const act = s.images?.[s.activeImage || 0];
@@ -476,16 +482,46 @@ async function viewGallery() {
     render();
     if (app.autopilot && p.storyboard.shots.every(s => (s.images || []).length)) autopilot();
   };
-  const pick = inp => { inp.value = ''; inp.click(); };
+  // Открыть выбор файлов. Если окно выбора не появилось (так бывает во встроенных окнах
+  // приложений на Android), через 2 с показываем, как обойти.
+  const pick = inp => {
+    inp.value = '';
+    let opened = false;
+    const mark = () => { opened = true; };
+    window.addEventListener('blur', mark, { once: true });
+    document.addEventListener('visibilitychange', mark, { once: true });
+    inp.addEventListener('change', mark, { once: true });
+    inp.addEventListener('cancel', mark, { once: true });
+    inp.click();
+    setTimeout(() => {
+      if (opened || document.hidden || !$('#pickHelp')) return;
+      $('#pickHelp').innerHTML = `<div class="notice warn small" style="text-align:left"><b>Окно выбора файлов не открылось.</b> Похоже, студия открыта во встроенном окне приложения, которое не разрешает выбирать файлы (так бывает в приложении Claude на Android). Что сделать:<br>1. Откройте ссылку на студию в браузере Chrome — там загрузка работает. Ваши проекты в Chrome будут отдельными: каждый браузер хранит свои данные.<br>2. Или скопируйте картинку и вставьте её в поле выше: долгое нажатие → «Вставить».</div>`;
+    }, 2000);
+  };
   $('#pickFiles').onclick = () => pick($('#files'));
   document.querySelectorAll('[data-pickup]').forEach(b => b.onclick = () => pick(document.querySelector(`[data-up="${b.dataset.pickup}"]`)));
-  // вставка картинки из буфера обмена
+  // вставка картинки из буфера обмена (Ctrl+V или «Вставить» в поле на телефоне)
+  const pasteFiles = list => list.map((f, i) => new File([f], f.name && f.name !== 'image.png' ? f.name : `вставка_${Date.now()}_${i + 1}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type || 'image/png' }));
   document.onpaste = e => {
     if (app.view !== 'gallery') return;
-    const fs = [...(e.clipboardData?.items || [])].filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean)
-      .map((f, i) => new File([f], f.name && f.name !== 'image.png' ? f.name : `вставка_${Date.now()}_${i + 1}.png`, { type: f.type }));
-    if (fs.length) { e.preventDefault(); handleFiles(fs); }
+    const fs = [...(e.clipboardData?.items || [])].filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean);
+    if (fs.length) { e.preventDefault(); handleFiles(pasteFiles(fs)); return; }
+    if (e.target.closest?.('#pasteBox')) setTimeout(scanPasteBox, 50);
   };
+  // некоторые клавиатуры вставляют картинку как элемент <img> — забираем её оттуда
+  const pasteBox = $('#pasteBox');
+  const pasteHint = pasteBox.textContent;
+  const scanPasteBox = async () => {
+    const imgs = [...pasteBox.querySelectorAll('img')];
+    const out = [];
+    for (const im of imgs) { try { if (/^(data|blob):/.test(im.src)) out.push(await (await fetch(im.src)).blob()); } catch (e) {} }
+    pasteBox.textContent = pasteHint;
+    if (out.length) handleFiles(pasteFiles(out));
+    else if (imgs.length) toast('Не удалось забрать вставленную картинку — скачайте её и загрузите файлом');
+  };
+  pasteBox.addEventListener('focus', () => { if (pasteBox.textContent === pasteHint) pasteBox.textContent = ''; });
+  pasteBox.addEventListener('blur', () => { if (!pasteBox.textContent.trim() && !pasteBox.querySelector('img')) pasteBox.textContent = pasteHint; });
+  pasteBox.addEventListener('input', () => { if (pasteBox.querySelector('img')) scanPasteBox(); else if (pasteBox.textContent.trim() && pasteBox.textContent !== pasteHint) { pasteBox.textContent = ''; toast('В буфере текст, а не картинка'); } });
   const drop = $('#drop');
   ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
   ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
