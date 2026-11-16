@@ -33,7 +33,7 @@ export function describeState(project, edl) {
     masterVol: e.masterVol ?? 0.9, osd: e.osd,
     title: { on: e.title?.on !== false, lines: e.title?.lines || [] },
     screamer: { on: e.screamer?.on !== false, shot: edl?.scream ? edl.scream.shotN : null, auto: (e.screamer?.shotId || 'auto') === 'auto' },
-    targetDuration: e.targetDuration || null, introDur: e.introDur ?? 2.2, outroDur: e.outroDur ?? 1.8,
+    targetDuration: e.targetDuration || null, introDur: e.introDur ?? 1.2, outroDur: e.outroDur ?? 1.2,
     totalDuration: edl ? +edl.duration.toFixed(1) : null,
   };
 }
@@ -58,8 +58,8 @@ ${JSON.stringify(state)}
 {"op":"osd","value":"vhs|cctv|archive|none"}
 {"op":"title","lines":["строка 1","строка 2",...]}  или {"op":"title","on":false|true}
 {"op":"screamer","on":true|false}  или {"op":"screamer","n":<номер кадра>|"auto"}
-{"op":"duration","seconds":30..45}
-{"op":"intro","seconds":1.2..4}  {"op":"outro","seconds":1..4}
+{"op":"duration","seconds":15..25}
+{"op":"intro","seconds":0.6..4}  {"op":"outro","seconds":0.8..4}
 {"op":"reroll"}  — другой вариант расстановки движений/переходов/сбоев
 
 Правила: меняй только то, о чём просят. «Меньше/слабее» ≈ delta −0.2, «сильно меньше/убрать» — value 0 или выключить, «больше» ≈ +0.2. Номера кадров — как в состоянии. Если просьба невыполнима этими операциями — не выдумывай, объясни в reply.
@@ -205,9 +205,9 @@ export function applyOps(project, ops, edl) {
           else if (o.n === 'auto') { e.screamer = { on: true, shotId: 'auto' }; changes.push('Скример: выбор изображения — авто'); }
           else if (o.on != null) { e.screamer.on = !!o.on; changes.push(o.on ? 'Скример включён' : 'Скример выключен'); }
           break;
-        case 'duration': { const v = Math.max(20, Math.min(90, Number(o.seconds))); e.targetDuration = v; changes.push(`Длительность ролика → ${v} с`); break; }
-        case 'intro': { const v = Math.max(1.2, Math.min(4, Number(o.seconds))); e.introDur = v; changes.push(`Чёрный экран в начале → ${v.toFixed(1)} с`); break; }
-        case 'outro': { const v = Math.max(1, Math.min(4, Number(o.seconds))); e.outroDur = v; changes.push(`Финальный обрыв → ${v.toFixed(1)} с`); break; }
+        case 'duration': { const want = Number(o.seconds), v = Math.max(15, Math.min(25, want)); e.targetDuration = v; changes.push(`Длительность ролика → ${v} с` + (want > 25 ? ' (максимум 25 с)' : '')); break; }
+        case 'intro': { const v = Math.max(0.6, Math.min(4, Number(o.seconds))); e.introDur = v; changes.push(`Чёрный экран в начале → ${v.toFixed(1)} с`); break; }
+        case 'outro': { const v = Math.max(0.8, Math.min(4, Number(o.seconds))); e.outroDur = v; changes.push(`Финальный обрыв → ${v.toFixed(1)} с`); break; }
         case 'template': { const t = BUILTIN_TEMPLATES.find(x => x.id === o.id); if (t) { e.params = JSON.parse(JSON.stringify(t.params)); e.osd = t.osd; e.templateId = t.id; changes.push('Стиль → ' + t.name); } break; }
         case 'reroll': e.seed = Math.floor(Math.random() * 1e9); changes.push('Новый вариант расстановки движений, переходов и сбоев'); break;
       }

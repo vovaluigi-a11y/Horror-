@@ -136,14 +136,17 @@ export async function deleteIdeaRecord(id) { return db.del('ideas', id); }
 // ---------- Настройки ----------
 export async function getSettings() {
   const s = await db.get('meta', 'settings');
-  return Object.assign(defaultSettings(), s ? s.value : {});
+  const v = s ? { ...s.value } : {};
+  // переход на короткий формат: максимум 25 с (старые настройки 30–45 с заменяются один раз)
+  if (!v.dur25) { const d = defaultSettings(); v.minDuration = d.minDuration; v.maxDuration = d.maxDuration; v.targetDuration = d.targetDuration; v.dur25 = true; }
+  return Object.assign(defaultSettings(), v);
 }
 export async function saveSettings(value) { await db.put('meta', { id: 'settings', value }); }
 export function defaultSettings() {
   return {
     mode: 'director',          // auto | director | manual
     width: 1080, height: 1920, fps: 30,
-    minDuration: 30, maxDuration: 45, targetDuration: 38,
+    minDuration: 18, maxDuration: 25, targetDuration: 24, dur25: true,
     videoBitrate: 10_000_000, audioBitrate: 192_000,
     defaultTemplate: 'builtin_vhs94',
     styles: ['analog', 'found', 'vhs'],

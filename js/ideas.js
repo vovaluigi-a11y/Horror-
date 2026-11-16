@@ -155,8 +155,8 @@ const BEATS_BY_COUNT = {
 export function storyboardFromImages(n, settings) {
   const base = BEATS_BY_COUNT[Math.max(6, Math.min(10, n))];
   const beats = Array.from({ length: n }, (_, i) => n === 1 ? 'reveal' : base[Math.round(i * (base.length - 1) / (n - 1))]);
-  const target = settings.targetDuration || 38;
-  const per = Math.max(2.2, Math.min(7.5, (target - 4) / n));
+  const target = settings.targetDuration || 24;
+  const per = Math.max(1.6, Math.min(6, (target - 7) / n));
   const shots = beats.map((b, i) => ({
     id: uid('sh'), n: i + 1, beat: b, duration: Math.round(per * 10) / 10,
     content: `Ваше изображение ${i + 1}`, composition: COMPOSITION[b], camera: { move: 'auto', intensity: b === 'climax' ? 0.9 : 0.6 },
@@ -205,8 +205,8 @@ export function generateStoryboard(idea, settings, opts = {}) {
   const r = rng(opts.seed || Date.now());
   const f = byId(FORMATS, idea.parts.format) || FORMATS[0], l = byId(LOCATIONS, idea.parts.location) || LOCATIONS[0];
   const a = byId(ANOMALIES, idea.parts.anomaly) || ANOMALIES[0], e = byId(ENTITIES, idea.parts.entity) || ENTITIES[0], en = byId(ENDINGS, idea.parts.ending) || ENDINGS[0];
-  const target = settings.targetDuration || 38;
-  const count = opts.count || Math.max(6, Math.min(10, Math.round((target - 4) / 4.4)));
+  const target = settings.targetDuration || 24;
+  const count = opts.count || Math.max(6, Math.min(8, Math.round((target - 7) / 2.6)));
   const beats = BEATS_BY_COUNT[count];
   const pickDetail = (() => { const d = [...l.details]; return () => d.length ? d.splice(Math.floor(r() * d.length), 1)[0] : l.details[0]; })();
   const figure = e.id === 'absence' ? 'следы присутствия' : e.name.toLowerCase();

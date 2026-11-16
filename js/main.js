@@ -174,7 +174,7 @@ async function quickProjectFromFiles(files) {
   p.bible = { location: '', character: '', keyObject: '', era: '1996', camera: 'бытовая VHS-камера', palette: '', rules: '', osdDate: { y: 1996, m: 10, d: 14, h: 2, min: 13, s: 7 } };
   p.script = 'Ролик из ваших изображений (' + list.length + ' шт.).';
   toast(`Получено файлов: ${list.length}. Анализирую…`);
-  const rep = await addImages(p, list.slice(0, 12));
+  const rep = await addImages(p, list.slice(0, 8));
   const rej = rep.rejected || [];
   p.storyboard.shots = p.storyboard.shots.filter(s => (s.images || []).length);
   p.storyboard.shots.forEach((s, i) => s.n = i + 1);
@@ -184,7 +184,7 @@ async function quickProjectFromFiles(files) {
   }
   app.project = p; invalidateBuild(); await save();
   app.uploadNote = `<div class="notice ok small">Создан проект из ${p.storyboard.shots.length} изображений. Порядок кадров — по именам файлов; его можно поменять в Сценарной (стрелки ↑↓).</div>` + (rej.length ? `<div class="notice bad small">Не загружено: ${rej.map(r => esc(r.name) + ': ' + esc(r.reason)).join('<br>')}</div>` : '');
-  if (list.length > 12) toast('Взяты первые 12 изображений — это максимум для ролика 30–45 с', 6000);
+  if (list.length > 8) toast('Взяты первые 8 изображений — это максимум для ролика до 25 с', 6000);
   go('gallery');
 }
 function quickUploadHTML(id) {
@@ -763,8 +763,8 @@ async function viewMontage() {
           <div class="grid g2">${Object.entries(groups).map(([g, ds]) => `<div class="card" style="padding:12px"><h4>${g}</h4>${ds.map(d => `<div class="sl"><span>${d.name}</span><input type="range" min="0" max="1" step="0.01" data-p="${d.id}" value="${P[d.id]}"><output>${Math.round(P[d.id] * 100)}</output></div>`).join('')}</div>`).join('')}
             <div class="card" style="padding:12px"><h4>Структура</h4>
               <div class="sl"><span>Целевая длительность, с</span><input type="range" min="${app.settings.minDuration}" max="${app.settings.maxDuration}" step="1" id="tdur" value="${p.edit.targetDuration || app.settings.targetDuration}"><output>${p.edit.targetDuration || app.settings.targetDuration}</output></div>
-              <div class="sl"><span>Вступление (чёрный экран), с</span><input type="range" min="1.2" max="4" step="0.1" id="intro" value="${p.edit.introDur ?? 2.2}"><output>${(p.edit.introDur ?? 2.2).toFixed(1)}</output></div>
-              <div class="sl"><span>Финальный обрыв, с</span><input type="range" min="1" max="4" step="0.1" id="outro" value="${p.edit.outroDur ?? 1.8}"><output>${(p.edit.outroDur ?? 1.8).toFixed(1)}</output></div>
+              <div class="sl"><span>Вступление (чёрный экран), с</span><input type="range" min="0.6" max="4" step="0.1" id="intro" value="${p.edit.introDur ?? 1.2}"><output>${(p.edit.introDur ?? 1.2).toFixed(1)}</output></div>
+              <div class="sl"><span>Финальный обрыв, с</span><input type="range" min="0.8" max="4" step="0.1" id="outro" value="${p.edit.outroDur ?? 1.2}"><output>${(p.edit.outroDur ?? 1.2).toFixed(1)}</output></div>
             </div></div>` : ''}
         ${tab === 'sound' ? `<div class="card"><h4>Звуковые дорожки (синтезируются кодом — без чужих записей)</h4>
             ${TRACKS.map(t => `<div class="track"><input type="checkbox" data-ton="${t.id}" ${p.edit.tracks[t.id]?.on !== false ? 'checked' : ''}><span>${t.name}</span><input type="range" min="0" max="1" step="0.01" data-tvol="${t.id}" value="${p.edit.tracks[t.id]?.vol ?? 0.6}"><output class="small mono">${Math.round((p.edit.tracks[t.id]?.vol ?? 0.6) * 100)}</output></div>`).join('')}
@@ -1054,9 +1054,9 @@ function viewSettings() {
     <div class="grid g2">
       <div class="card"><h3>Режим работы</h3>${Object.entries(MODES).map(([k, v]) => `<label class="row" style="margin:6px 0;align-items:flex-start;flex-wrap:nowrap"><input type="radio" name="mode" value="${k}" ${s.mode === k ? 'checked' : ''}><span><b>${v}</b><br><span class="small muted">${esc(MODE_HINT[k])}</span></span></label>`).join('')}</div>
       <div class="card"><h3>Продолжительность</h3>
-        <label class="f"><span>Минимум, с</span><input type="number" id="minD" value="${s.minDuration}" min="10" max="120"></label>
-        <label class="f"><span>Максимум, с</span><input type="number" id="maxD" value="${s.maxDuration}" min="10" max="180"></label>
-        <label class="f"><span>Целевая, с</span><input type="number" id="tD" value="${s.targetDuration}" min="10" max="180"></label></div>
+        <label class="f"><span>Минимум, с</span><input type="number" id="minD" value="${s.minDuration}" min="10" max="25"></label>
+        <label class="f"><span>Максимум, с</span><input type="number" id="maxD" value="${s.maxDuration}" min="10" max="25"></label>
+        <label class="f"><span>Целевая, с</span><input type="number" id="tD" value="${s.targetDuration}" min="10" max="25"></label></div>
       <div class="card"><h3>Экспорт</h3>
         <label class="f"><span>Разрешение</span><select id="res">${[[1080, 1920, '1080×1920 (стандарт Shorts/Reels/TikTok)'], [720, 1280, '720×1280 (быстрее, для черновиков)'], [1440, 2560, '1440×2560 (если браузер поддерживает)']].map(([w, h, n]) => `<option value="${w}x${h}" ${s.width === w ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
         <label class="f"><span>Частота кадров</span><select id="fps">${[24, 25, 30].map(f => `<option ${s.fps === f ? 'selected' : ''}>${f}</option>`).join('')}</select></label>
@@ -1072,7 +1072,7 @@ function viewSettings() {
     <div class="row" style="margin-top:16px"><button class="btn primary" id="saveS">Сохранить настройки</button></div></div>`;
   $('#saveS').onclick = async () => {
     s.mode = document.querySelector('[name=mode]:checked').value;
-    s.minDuration = +$('#minD').value; s.maxDuration = Math.max(s.minDuration, +$('#maxD').value); s.targetDuration = Math.min(s.maxDuration, Math.max(s.minDuration, +$('#tD').value));
+    s.maxDuration = Math.min(25, Math.max(10, +$('#maxD').value)); s.minDuration = Math.min(s.maxDuration, Math.max(10, +$('#minD').value)); s.targetDuration = Math.min(s.maxDuration, Math.max(s.minDuration, +$('#tD').value));
     const [w, h] = $('#res').value.split('x').map(Number); s.width = w; s.height = h; s.fps = +$('#fps').value;
     s.videoBitrate = +$('#vbr').value * 1e6; s.previewScale = +$('#pscale').value; s.defaultTemplate = $('#dtpl').value;
     s.styles = $('#styles').value.split(',').map(x => x.trim()).filter(Boolean);

@@ -137,7 +137,7 @@ function buildTitle(cfg, start, fps, r) {
   const lines = (cfg.lines || []).map(x => String(x || '').trim()).filter(Boolean).slice(0, 6);
   if (!lines.length) return null;
   const chars = lines.reduce((a, l) => a + l.length, 0);
-  const typing = Math.min(3.4, Math.max(1.2, chars * 0.045)); // титр не должен съедать ролик: ~5 с максимум
+  const typing = Math.min(2.4, Math.max(1.0, chars * 0.032)); // титр не должен съедать короткий ролик: ~3,5–4 с
   const per = typing / Math.max(1, chars);
   const keys = [];
   let t = start + 0.35;
@@ -148,9 +148,9 @@ function buildTitle(cfg, start, fps, r) {
       t += per * (0.55 + r() * 0.9);
     }
     keys.push({ t: Math.round(t * 1000) / 1000, li, ci: l.length, kind: 'enter' });
-    t += 0.14 + r() * 0.1;
+    t += 0.1 + r() * 0.06;
   });
-  const hold = 0.9;
+  const hold = 0.6;
   const dur = Math.round((t - start + hold + 0.15) * fps) / fps;
   return { start, dur, end: start + dur, lines, keys };
 }
@@ -179,10 +179,10 @@ export function buildEDL(project, analyses, settings) {
   if (!shots.length) throw new Error('Нет кадров с изображениями. Загрузите изображения в Галерее.');
 
   // --- вступление: чёрный экран с помехами (noiseDur), затем печатающийся титр ---
-  const noiseDur = clamp(project.edit.introDur ?? 2.2, 1.2, 4);
+  const noiseDur = clamp(project.edit.introDur ?? 1.2, 0.6, 4);
   const title = buildTitle(edit.title, noiseDur, fps, r);
   const introDur = noiseDur + (title ? title.dur : 0); // начало показа кадров
-  const outroDur = clamp(project.edit.outroDur ?? 1.8, 1.0, 4);
+  const outroDur = clamp(project.edit.outroDur ?? 1.2, 0.8, 4);
 
   // --- скример: выбор изображения ---
   const scrCfg = edit.screamer || { on: true, shotId: 'auto' };
@@ -201,18 +201,23 @@ export function buildEDL(project, analyses, settings) {
   const SCREAM_DUR = 0.8;
 
   let durs = shots.map(s => clamp(Number(edit.overrides?.[s.id]?.duration ?? s.duration) || 4, 1.8, 9));
-  const minD = settings.minDuration || 30, maxD = settings.maxDuration || 45;
-  const target = clamp(project.edit.targetDuration || settings.targetDuration || 38, minD, maxD);
+  const minD = settings.minDuration || 18, maxD = settings.maxDuration || 25;
+  const target = clamp(project.edit.targetDuration || settings.targetDuration || 24, minD, maxD);
   const fixed = introDur + outroDur + (screamShot ? SCREAM_DUR : 0);
-  // подгонка под целевую длительность (с учётом пределов на кадр)
-  for (let iter = 0; iter < 6; iter++) {
-    const total = fixed + durs.reduce((a, b) => a + b, 0);
-    if (Math.abs(total - target) < 0.05) break;
-    const k = (target - fixed) / durs.reduce((a, b) => a + b, 0);
-    durs = durs.map(d => clamp(d * k, 2.2, 7.5));
+  // подгонка под целевую длительность: при коротком ролике нижний предел кадра снижается (но не меньше 1,2 с)
+  const avail = Math.max(1.2 * shots.length, target - fixed);
+  const lo = Math.min(2.2, Math.max(1.2, avail / shots.length * 0.75)), hi = 6.5;
+  for (let iter = 0; iter < 8; iter++) {
+    const sum = durs.reduce((a, b) => a + b, 0);
+    if (Math.abs(sum - avail) < 0.05) break;
+    const k = avail / sum;
+    durs = durs.map(d => clamp(d * k, lo, hi));
   }
-  // квантование по кадрам
-  durs = durs.map(d => Math.round(d * fps) / fps);
+  // жёсткий предел: ролик не длиннее максимума
+  const sum2 = durs.reduce((a, b) => a + b, 0);
+  if (fixed + sum2 > maxD) durs = durs.map(d => Math.max(1.2, d * (maxD - fixed) / sum2));
+  // квантование по кадрам (вниз, чтобы не перескочить предел)
+  durs = durs.map(d => Math.floor(d * fps) / fps);
 
   // порядок показа: кадры раскадровки + скример перед финальным кадром
   const order = shots.map((sh, i) => ({ sh, i }));

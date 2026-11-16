@@ -125,12 +125,10 @@ export function defaultTitleLines(project) {
   const lines = [place, `${p2(d.d)}.${p2(d.m)}.${d.y}  ${p2(d.h)}:${p2(d.min)}`];
   if (fmt) {
     lines.push('ИСТОЧНИК: ' + fmt.name.toLowerCase());
-    if (fmt.found.length <= 60) lines.push(fmt.found[0].toUpperCase() + fmt.found.slice(1) + '.');
   } else if (parts.format && typeof parts.format === 'string') {
     lines.push('ИСТОЧНИК: ' + parts.format);
   } else {
     lines.push('ИСТОЧНИК НЕ УСТАНОВЛЕН');
-    lines.push('Запись публикуется без изменений.');
   }
   return lines;
 }
@@ -140,7 +138,7 @@ export function ensureEditDefaults(project) {
   const e = project.edit;
   for (const t of TRACKS) if (!e.tracks[t.id]) e.tracks[t.id] = { on: true, vol: t.id === 'keys' ? 0.75 : 0.6 };
   if (!e.title) e.title = { on: true, lines: defaultTitleLines(project), auto: true };
-  else if (e.title.auto && project.idea && e.title.forIdea !== project.idea.id) { e.title.lines = defaultTitleLines(project); }
+  else if (e.title.auto && ((project.idea && e.title.forIdea !== project.idea.id) || (e.title.lines || []).length > 3)) { e.title.lines = defaultTitleLines(project); }
   if (project.idea) e.title.forIdea = project.idea.id;
   if (!e.screamer) e.screamer = { on: true, shotId: 'auto' };
   if (!e.editLog) e.editLog = [];

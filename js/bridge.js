@@ -8,7 +8,7 @@ import { buildPrompt, BEAT_NAMES } from './ideas.js';
 export function ideasRequest(history, styles) {
   const avoid = history.slice(0, 40).map(h => h.idea?.title).filter(Boolean);
   return `Ты — сценарист коротких хоррор-видео в эстетике analog horror, found footage, false documentary, VHS horror, liminal и dreamcore.
-Придумай 10 оригинальных идей для вертикального ролика 30–45 секунд, который выглядит как фрагмент найденной архивной записи.
+Придумай 10 оригинальных идей для вертикального ролика длиной до 25 секунд, который выглядит как фрагмент найденной архивной записи.
 
 Требования:
 - никаких банальных «заброшенных больниц с призраками»;
@@ -24,7 +24,7 @@ ${avoid.length ? '\nНе повторяй эти уже использованн
 }
 
 export function storyboardRequest(idea, settings) {
-  const target = settings.targetDuration || 38;
+  const target = settings.targetDuration || 24;
   return `Ты — режиссёр псевдодокументального хоррора. Разработай раскадровку вертикального ролика (9:16) длительностью ${target} секунд по идее:
 
 Название: ${idea.title}
